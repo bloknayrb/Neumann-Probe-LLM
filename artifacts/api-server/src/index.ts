@@ -1,3 +1,4 @@
+import "./load-env.js"; // MUST be first — populates process.env from .env
 import app from "./app";
 import { logger } from "./lib/logger";
 import { startPoller } from "./routes/vng/poller.js";

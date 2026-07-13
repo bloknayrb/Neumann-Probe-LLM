@@ -63,6 +63,25 @@ export default defineConfig({
     strictPort: true,
     host: "0.0.0.0",
     allowedHosts: true,
+    proxy: {
+      // Dev: forward API calls to the Express api-server. SSE (/api/vng/command)
+      // streams through with buffering disabled.
+      "/api": {
+        target: process.env.API_TARGET || "http://localhost:8080",
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on("proxyRes", (proxyRes) => {
+            if (
+              String(proxyRes.headers["content-type"]).includes(
+                "text/event-stream",
+              )
+            ) {
+              proxyRes.headers["cache-control"] = "no-cache, no-transform";
+            }
+          });
+        },
+      },
+    },
     headers: {
       "Cache-Control": "no-store",
     },

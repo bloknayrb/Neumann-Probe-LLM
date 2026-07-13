@@ -47,3 +47,7 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Local secrets — never commit (holds the live game API key)
+.env
+.env.*

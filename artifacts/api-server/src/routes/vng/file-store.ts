@@ -1,7 +1,11 @@
 import { promises as fs } from "fs";
 import path from "path";
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+// VNG_DATA_DIR lets the stdio MCP subprocess (spawned by the Claude CLI with a
+// different cwd) share the same bookkeeping data dir as the main api-server.
+const DATA_DIR = process.env.VNG_DATA_DIR
+  ? path.resolve(process.env.VNG_DATA_DIR)
+  : path.resolve(process.cwd(), "data");
 
 async function ensureDir() {
   await fs.mkdir(DATA_DIR, { recursive: true });
