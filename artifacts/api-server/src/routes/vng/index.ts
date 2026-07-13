@@ -59,6 +59,26 @@ function sse(res: import("express").Response, event: Record<string, unknown>) {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
+// ── Shared state extraction ───────────────────────────────────────────────────
+function extractCoreState(probeResp: any, manniesResp: any, sectorResp: any) {
+  const probe = probeResp.probe;
+  const inv = probe.inventory ?? {};
+  const sector: { x: number; y: number; z: number } =
+    probe.sector?.relative ??
+    sectorResp?.sector?.relativeCoordinates ??
+    { x: 0, y: 0, z: 0 };
+  const sectorObjects: any[] = sectorResp?.sector?.objects ?? [];
+  const mannies: any[] = manniesResp.mannies ?? [];
+  const inventoryItems: any[] = inv.items ?? [];
+  const activeMannyIds = new Set(mannies.map((m: any) => m.id));
+  const stowedMannies = inventoryItems.filter(
+    (i: any) => i.type === "manny" && !activeMannyIds.has(i.id)
+  );
+  return { probe, inv, sector, sectorObjects, mannies, inventoryItems, activeMannyIds, stowedMannies };
+}
+
+// ── Routes ────────────────────────────────────────────────────────────────────
+
 router.get("/scheduled", async (_req, res) => {
   try {
     const actions = await getPendingActions();
@@ -79,22 +99,41 @@ router.delete("/scheduled/:id", async (req, res) => {
   }
 });
 
-router.get("/state", async (_req, res) => {
+router.get("/probes", async (_req, res) => {
+  try {
+    const data = await client.getProbeList();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/state", async (req, res) => {
+  const probeId = req.query.probeId ? Number(req.query.probeId) : null;
   try {
     const [probeResp, manniesResp, sectorResp] = await Promise.all([
-      client.getProbe(),
-      client.getMannies(),
-      client.getSector().catch(() => null), // unavailable during high-speed transit
+      probeId ? client.getProbeById(probeId) : client.getProbe(),
+      probeId ? client.getManniesById(probeId) : client.getMannies(),
+      (probeId ? client.getSectorById(probeId) : client.getSector()).catch(() => null),
     ]);
 
-    const probe = probeResp.probe;
-    const inv = probe.inventory ?? {};
-    const sector = probe.sector?.relative ?? { x: 0, y: 0, z: 0 };
-    const sectorObjects: any[] = sectorResp?.sector?.objects ?? [];
+    const { probe, inv, sector, sectorObjects, mannies, activeMannyIds, stowedMannies } =
+      extractCoreState(probeResp, manniesResp, sectorResp);
 
-    recordSector(sector.x, sector.y, sector.z, sectorObjects).catch(() => {});
+    // getSector() yields null ONLY when it threw — transit or a real fetch
+    // error — which is distinct from a successful-but-empty sector. Surface it
+    // so the UI can show "data unavailable" instead of falsely claiming the
+    // sector is empty.
+    const sectorUnavailable = sectorResp === null;
 
-    const mannies = (manniesResp.mannies ?? []).map((m: any) => {
+    // Only persist a scan that actually succeeded. On a failed fetch
+    // sectorObjects is [] — recording that would clobber the last-known-good
+    // detail for this sector (visited-sectors store, read by the MAP/SECTORS
+    // tabs) with an empty list.
+    if (!sectorUnavailable)
+      recordSector(sector.x, sector.y, sector.z, sectorObjects).catch((e) => console.error("[recordSector /state]", e));
+
+    const manniesNorm = mannies.map((m: any) => {
       const task = m.task && typeof m.task === "object" && !Array.isArray(m.task) ? m.task : null;
       return {
         id: m.id,
@@ -117,8 +156,7 @@ router.get("/state", async (_req, res) => {
       };
     });
 
-    const activeMannyIds = new Set((manniesResp.mannies ?? []).map((m: any) => m.id));
-    const stowedMannies = ((probeResp.probe?.inventory?.items ?? []) as any[])
+    const stowedNorm = ((probeResp.probe?.inventory?.items ?? []) as any[])
       .filter((i: any) => i.type === "manny" && !activeMannyIds.has(i.id))
       .map((i: any) => ({ itemId: i.id, name: i.label ?? i.name ?? "Unnamed Manny" }));
 
@@ -145,10 +183,12 @@ router.get("/state", async (_req, res) => {
         usedCapacity: inv.usedCapacity ?? 0,
         freeCapacity: inv.freeCapacity ?? 0,
       },
-      mannies,
-      stowedMannies,
+      mannies: manniesNorm,
+      stowedMannies: stowedNorm,
       sectorObjects: sectorObjectsMapped,
       otherProbes,
+      sectorUnavailable,
+      scan: sectorResp?.sector?.scan ?? null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

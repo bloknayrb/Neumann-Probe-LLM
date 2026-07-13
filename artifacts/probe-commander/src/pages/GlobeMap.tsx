@@ -1,22 +1,33 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { SectorObjectList } from "../components/SectorObject";
 
-const RADIUS = 4;
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-// Pre-generate all valid coordinate offsets within RADIUS
-// Valid = even sum, within sphere
-const OFFSETS: [number, number, number][] = (() => {
+async function fetchJson<T = any>(url: string): Promise<T> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Request failed (${r.status})`);
+  const json = await r.json();
+  if (json.error) throw new Error(json.error);
+  return json as T;
+}
+
+const DEFAULT_RADIUS = 4;
+const MIN_RADIUS = 2;
+const MAX_RADIUS = 6;
+
+function computeOffsets(radius: number): [number, number, number][] {
   const pts: [number, number, number][] = [];
-  const r2 = RADIUS * RADIUS;
-  for (let dx = -RADIUS; dx <= RADIUS; dx++) {
-    for (let dy = -RADIUS; dy <= RADIUS; dy++) {
-      for (let dz = -RADIUS; dz <= RADIUS; dz++) {
+  const r2 = radius * radius;
+  for (let dx = -radius; dx <= radius; dx++) {
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dz = -radius; dz <= radius; dz++) {
         if (dx * dx + dy * dy + dz * dz <= r2 && (dx + dy + dz) % 2 === 0)
           pts.push([dx, dy, dz]);
       }
     }
   }
   return pts;
-})();
+}
 
 interface VisitedSector {
   sectorX: number;
@@ -50,10 +61,10 @@ interface Props {
   priorZ?: number;
   isMoving: boolean;
   sectorsData?: { sectors: any[] };
-  onScoutRequest?: (x: number, y: number, z: number) => void;
+  onRefreshSectors?: () => Promise<void>;
 }
 
-export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMoving, sectorsData, onScoutRequest }: Props) {
+export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMoving, sectorsData, onRefreshSectors }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rotRef = useRef({ x: 0.4, y: 0.6 });
   const [rot, setRot] = useState({ x: 0.4, y: 0.6 });
@@ -80,6 +91,29 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
   const [brightDots,    setBrightDots]    = useState(0.5);
   const [brightVisited, setBrightVisited] = useState(0.5);
   const [brightCourse,  setBrightCourse]  = useState(0.5);
+  const [brightRelay,   setBrightRelay]   = useState(0.5);
+  const [radius, setRadius] = useState(DEFAULT_RADIUS);
+  const OFFSETS = useMemo(() => computeOffsets(radius), [radius]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
+  const [scoutResult, setScoutResult] = useState<any>(null);
+  const [scoutLoading, setScoutLoading] = useState(false);
+  const [scoutError, setScoutError] = useState<string | null>(null);
+
+  const handleRefresh = useCallback(async () => {
+    if (!onRefreshSectors || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await onRefreshSectors();
+      setRefreshMsg("Scanned all sectors");
+      setTimeout(() => setRefreshMsg(null), 3000);
+    } catch {
+      setRefreshMsg("Scan failed");
+      setTimeout(() => setRefreshMsg(null), 3000);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [onRefreshSectors, isRefreshing]);
 
   const visitedMap = useMemo<Map<string, VisitedSector>>(() => {
     const m = new Map<string, VisitedSector>();
@@ -113,7 +147,7 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
 
     const cosY = Math.cos(ry), sinY = Math.sin(ry);
     const cosX = Math.cos(rx), sinX = Math.sin(rx);
-    const camDist = RADIUS * 1.7;
+    const camDist = DEFAULT_RADIUS * 1.7; // fixed at baseline so sphere scales with radius
     const fov = Math.min(W, H) * 0.42 * zoomRef.current;
 
     const pts: ProjectedDot[] = OFFSETS.map(([dx, dy, dz]) => {
@@ -155,19 +189,21 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
     };
 
     // Faint sphere outline
-    const sphereScreenR = fov / camDist * RADIUS * 0.97;
+    const sphereScreenR = fov / camDist * radius * 0.97;
     ctx.beginPath();
     ctx.arc(cx, cy, sphereScreenR, 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(80,255,130,0.05)";
     ctx.lineWidth = 1;
     ctx.stroke();
 
+    const relayAlpha = Math.min(1, brightRelay * 2);
+
     // 1. Sparse uncharted lattice dots (skip probe & visited — drawn separately)
     for (const p of pts) {
       const { sx, sy, ax, ay, az, z2 } = p;
       if (visitedMap.has(`${ax},${ay},${az}`)) continue;
       if (ax === probeX && ay === probeY && az === probeZ) continue;
-      const depth = (z2 + RADIUS) / (2 * RADIUS);
+      const depth = (z2 + radius) / (2 * radius);
       ctx.beginPath();
       ctx.arc(sx, sy, 1.5, 0, Math.PI * 2);
       ctx.fillStyle = `rgba(80,160,255,${(0.12 + depth * 0.22) * brightDots * 2})`;
@@ -245,7 +281,7 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
     if (!homeInVisited && !homeIsProbe) {
       // Check if [0,0,0] is within the globe RADIUS of probe
       const hdx = 0 - probeX, hdy = 0 - probeY, hdz = 0 - probeZ;
-      if (hdx * hdx + hdy * hdy + hdz * hdz <= RADIUS * RADIUS) {
+      if (hdx * hdx + hdy * hdy + hdz * hdz <= radius * radius) {
         const hp = project(0, 0, 0);
         const r = 3.5;
         ctx.beginPath();
@@ -273,6 +309,34 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
       ctx.stroke();
     }
 
+    // 4b. SCUT relay markers — drawn after path, before probe
+    for (const vs of visitedMap.values()) {
+      const relays = (vs.objects ?? []).filter((o: any) => o.type === "scut_relay");
+      if (!relays.length) continue;
+      const rp = project(vs.sectorX, vs.sectorY, vs.sectorZ);
+      const hasActive = relays.some((r: any) => r.status === "active" || r.status === "on");
+      const sz = 5;
+      // Diamond shape (rotated square)
+      ctx.beginPath();
+      ctx.moveTo(rp.sx, rp.sy - sz);     // top
+      ctx.lineTo(rp.sx + sz, rp.sy);     // right
+      ctx.lineTo(rp.sx, rp.sy + sz);     // bottom
+      ctx.lineTo(rp.sx - sz, rp.sy);     // left
+      ctx.closePath();
+      ctx.fillStyle = hasActive
+        ? `rgba(0,230,230,${0.85 * relayAlpha})`
+        : `rgba(0,160,160,${0.45 * relayAlpha})`;
+      ctx.fill();
+      // Outer glow ring for active relays
+      if (hasActive) {
+        ctx.beginPath();
+        ctx.arc(rp.sx, rp.sy, sz + 3.5, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(0,220,220,${0.4 * relayAlpha})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
     // 5. Probe dot — always on top
     const probePrj = project(probeX, probeY, probeZ);
     {
@@ -295,13 +359,14 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
       ...(hasPrior ? [["○ prior", "rgba(255,200,80,0.7)"] as [string, string]] : []),
       ["⌂ home [0,0,0]", "rgba(120,200,255,0.8)"],
       ["● visited", "rgba(60,220,110,0.8)"],
+      ["◈ SCUT relay", "rgba(0,220,220,0.8)"],
     ];
     legends.forEach(([label, color], i) => {
       ctx.fillStyle = color;
       ctx.fillText(label, 6, H - 6 - i * 12);
     });
-  }, [rot, zoom, probeX, probeY, probeZ, priorX, priorY, priorZ, isMoving, visitedMap, selected,
-      brightProbe, brightDots, brightVisited, brightCourse]);
+  }, [rot, zoom, radius, probeX, probeY, probeZ, priorX, priorY, priorZ, isMoving, visitedMap, selected,
+      brightProbe, brightDots, brightVisited, brightCourse, brightRelay, OFFSETS]);
 
   useEffect(() => { draw(); }, [draw]);
 
@@ -327,6 +392,16 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
   }, []);
+
+  useEffect(() => {
+    if (!selected) { setScoutResult(null); setScoutError(null); return; }
+    const { ax: x, ay: y, az: z } = selected;
+    setScoutResult(null); setScoutError(null); setScoutLoading(true);
+    fetchJson(`${BASE}/api/vng/log/scout?x=${x}&y=${y}&z=${z}`)
+      .then(data => setScoutResult(data))
+      .catch(e => setScoutError(e.message))
+      .finally(() => setScoutLoading(false));
+  }, [selected]);
 
   function ctx(c: HTMLCanvasElement) {
     const context = c.getContext("2d")!;
@@ -382,20 +457,35 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
     <div className="flex flex-col h-full gap-2">
       <div className="flex items-center justify-between">
         <div className="text-xs text-muted-foreground tracking-widest">SECTOR GLOBE</div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={zoomOut}
-            disabled={zoom <= 0.25}
-            className="text-[11px] font-mono w-5 h-5 flex items-center justify-center rounded border border-border/40 text-muted-foreground hover:text-foreground hover:border-border disabled:opacity-25 disabled:cursor-not-allowed"
-          >−</button>
-          <span className="text-[10px] font-mono text-muted-foreground/60 w-8 text-center">{zoom}×</span>
-          <button
-            onClick={zoomIn}
-            disabled={zoom >= 5.0}
-            className="text-[11px] font-mono w-5 h-5 flex items-center justify-center rounded border border-border/40 text-muted-foreground hover:text-foreground hover:border-border disabled:opacity-25 disabled:cursor-not-allowed"
-          >+</button>
+        <div className="flex items-center gap-2">
+          {onRefreshSectors && (
+            <button
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              title="Scan all visited sectors to update relay and object data"
+              className="text-[10px] font-mono px-1.5 h-5 flex items-center gap-1 rounded border border-border/40 text-cyan-500/70 hover:text-cyan-400 hover:border-cyan-500/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {isRefreshing ? "…" : "↺"} SCAN
+            </button>
+          )}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={zoomOut}
+              disabled={zoom <= 0.25}
+              className="text-[11px] font-mono w-5 h-5 flex items-center justify-center rounded border border-border/40 text-muted-foreground hover:text-foreground hover:border-border disabled:opacity-25 disabled:cursor-not-allowed"
+            >−</button>
+            <span className="text-[10px] font-mono text-muted-foreground/60 w-8 text-center">{zoom}×</span>
+            <button
+              onClick={zoomIn}
+              disabled={zoom >= 5.0}
+              className="text-[11px] font-mono w-5 h-5 flex items-center justify-center rounded border border-border/40 text-muted-foreground hover:text-foreground hover:border-border disabled:opacity-25 disabled:cursor-not-allowed"
+            >+</button>
+          </div>
         </div>
       </div>
+      {refreshMsg && (
+        <div className="text-[10px] font-mono text-cyan-400/80">{refreshMsg}</div>
+      )}
       <div className="text-[10px] text-muted-foreground/40">
         Drag to rotate · scroll to zoom · click dot to inspect · {visitedMap.size} visited
       </div>
@@ -408,6 +498,7 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
             ["DOTS",    brightDots,    setBrightDots],
             ["VISITED", brightVisited, setBrightVisited],
             ["COURSE",  brightCourse,  setBrightCourse],
+            ["SCUT",    brightRelay,   setBrightRelay],
           ] as [string, number, (v: number) => void][]
         ).map(([label, val, set]) => (
           <div key={label} className="flex items-center gap-1.5 min-w-0">
@@ -420,6 +511,16 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
             />
           </div>
         ))}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[9px] font-mono text-muted-foreground/50 w-12 shrink-0">RANGE</span>
+          <input
+            type="range" min={MIN_RADIUS} max={MAX_RADIUS} step={1}
+            value={radius}
+            onChange={e => setRadius(parseInt(e.target.value))}
+            className="flex-1 h-1 accent-green-400 cursor-pointer"
+          />
+          <span className="text-[9px] font-mono text-muted-foreground/40 w-4 text-right">{radius}</span>
+        </div>
       </div>
 
       <div
@@ -441,40 +542,55 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
       {selected ? (
         <div className="border border-border/50 rounded p-2 space-y-1.5 bg-background/60 text-xs">
           <div className="flex items-center justify-between gap-2">
-            {onScoutRequest ? (
-              <button
-                onClick={() => onScoutRequest(selected.ax, selected.ay, selected.az)}
-                className="font-mono text-foreground glow-green hover:text-primary transition-colors underline-offset-2 hover:underline cursor-pointer"
-                title="Scan this sector in Scout"
-              >
-                [{selected.ax},{selected.ay},{selected.az}]
-              </button>
-            ) : (
-              <span className="font-mono text-foreground glow-green">
-                [{selected.ax},{selected.ay},{selected.az}]
-              </span>
-            )}
+            <span className="font-mono text-foreground glow-green">
+              [{selected.ax},{selected.ay},{selected.az}]
+            </span>
             <div className="flex items-center gap-1.5 flex-wrap">
               {selIsProbe && <span className="text-[10px] text-primary font-bold">◉ PROBE</span>}
               {selIsPrior && <span className="text-[10px] text-yellow-400">○ PRIOR</span>}
               {selIsHome && !selIsProbe && <span className="text-[10px] text-blue-300">⌂ HOME</span>}
-              {selSector && (
-                <span className="text-[10px] text-green-400">
-                  VISITED ×{selSector.visitCount}
-                </span>
-              )}
+              {selSector && <span className="text-[10px] text-green-400">VISITED ×{selSector.visitCount}</span>}
             </div>
             <button
-              onClick={() => setSelected(null)}
+              onClick={() => { setSelected(null); setScoutResult(null); setScoutError(null); }}
               className="text-muted-foreground/30 hover:text-muted-foreground ml-auto text-[10px]"
             >✕</button>
           </div>
 
-          {selSector ? (
-            <SectorDetail sector={selSector} />
-          ) : (
-            <div className="text-[10px] text-muted-foreground/40 italic">
-              Uncharted — use SCOUT tab to scan remotely.
+          {selSector && (
+            <div className="text-[10px] text-muted-foreground/40">
+              Last visited {new Date(selSector.lastVisitedAt).toLocaleString()}
+            </div>
+          )}
+
+          {scoutLoading && (
+            <div className="text-[10px] text-muted-foreground/60 animate-pulse">Scanning…</div>
+          )}
+          {scoutError && (
+            <div className="text-[10px] text-destructive">{scoutError}</div>
+          )}
+          {scoutResult?.unavailable && (
+            <div className="flex items-start gap-1.5 text-[10px] text-amber-400/80 bg-amber-400/5 border border-amber-400/20 rounded p-1.5">
+              <span>⏳</span>
+              <div>
+                Sensor data not ready.
+                {scoutResult.retryIn && <span className="text-muted-foreground ml-1">Try again in {scoutResult.retryIn}.</span>}
+              </div>
+            </div>
+          )}
+          {scoutResult && !scoutResult.unavailable && (
+            <div className="space-y-1.5">
+              {scoutResult.resourceSummary?.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {scoutResult.resourceSummary.map((r: string) => (
+                    <span key={r} className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px]">{r}</span>
+                  ))}
+                </div>
+              )}
+              {scoutResult.objects?.length === 0
+                ? <div className="text-[10px] text-muted-foreground/40 italic">Empty sector — no objects detected.</div>
+                : <SectorObjectList objects={scoutResult.objects} />
+              }
             </div>
           )}
         </div>
@@ -489,6 +605,7 @@ export function GlobeMap({ probeX, probeY, probeZ, priorX, priorY, priorZ, isMov
 
 function SectorDetail({ sector }: { sector: VisitedSector }) {
   const stars = sector.objects?.filter((o: any) => o.type === "star") ?? [];
+  const relays: any[] = sector.objects?.filter((o: any) => o.type === "scut_relay") ?? [];
   const planets: any[] = [];
   const asteroids: any[] = [];
   const solarSystems: any[] = [];
@@ -547,6 +664,29 @@ function SectorDetail({ sector }: { sector: VisitedSector }) {
           {planets.length > 4 && (
             <div className="text-muted-foreground/30 pl-3">+{planets.length - 4} more</div>
           )}
+        </div>
+      )}
+
+      {relays.length > 0 && (
+        <div className="space-y-0.5 pl-1">
+          {relays.map((relay: any, i: number) => (
+            <div key={i} className="flex flex-wrap gap-x-2 items-baseline">
+              <span className={(relay.status === "active" || relay.status === "on") ? "text-cyan-400" : "text-cyan-700"}>
+                ◈ {(relay.status === "active" || relay.status === "on") ? "SCUT ACTIVE" : "SCUT inactive"}
+              </span>
+              {relay.coverageRadiusSectors != null && (
+                <span className="text-muted-foreground/50">
+                  range {relay.coverageRadiusSectors} sectors
+                </span>
+              )}
+              {relay.network?.name && (
+                <span className="text-cyan-600/70 font-mono">[{relay.network.name}]</span>
+              )}
+              {relay.createdByProbeName && (
+                <span className="text-muted-foreground/40">by {relay.createdByProbeName}</span>
+              )}
+            </div>
+          ))}
         </div>
       )}
 

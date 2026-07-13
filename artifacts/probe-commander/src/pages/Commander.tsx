@@ -1,10 +1,22 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Maximize2, Minimize2 } from "lucide-react";
 import { GlobeMap } from "./GlobeMap";
 import { SystemMap } from "./SystemMap";
 import { objectIcon, SectorObjectList } from "../components/SectorObject";
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
+import { useIsDesktop } from "@/hooks/use-media-query";
+import { cn } from "@/lib/utils";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+async function fetchJson<T = any>(url: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(url, init);
+  if (!r.ok) throw new Error(`Request failed (${r.status})`);
+  const json = await r.json();
+  if (json.error) throw new Error(json.error);
+  return json as T;
+}
 
 type SseEvent =
   | { type: "status"; message: string }
@@ -89,13 +101,48 @@ function ApiError({ error }: { error: Error }) {
   );
 }
 
-function TelemetryPanel({ state, error }: { state: any; error: Error | null }) {
+function ScanReadinessBar({ scan }: { scan: { currentSectorResidenceSeconds: number; requiredResidenceSeconds: number; scanQuality: number } | null }) {
+  if (!scan) return null;
+  const { currentSectorResidenceSeconds: current, requiredResidenceSeconds: required, scanQuality } = scan;
+  const pct = required > 0 ? Math.min(100, (current / required) * 100) : 100;
+  const ready = scanQuality >= 1;
+  const remainingSec = Math.max(0, required - current);
+  const mins = Math.floor(remainingSec / 60);
+  const secs = remainingSec % 60;
+  const label = ready ? "READY" : mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  const color = ready ? "hsl(150 80% 45%)" : "hsl(38 95% 55%)";
+  return (
+    <div>
+      <div className="flex justify-between text-xs mb-1">
+        <span className="text-muted-foreground">SCAN</span>
+        <span style={{ color }}>{label}</span>
+      </div>
+      <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-1000"
+          style={{ width: `${pct}%`, backgroundColor: color, boxShadow: ready ? `0 0 6px ${color}` : "none" }} />
+      </div>
+    </div>
+  );
+}
+
+type ProbeEntry = { id: number; name: string; status: string; isDefault?: boolean };
+
+function TelemetryPanel({
+  state, error, probeList = [], selectedProbeId = null, onSelectProbe = () => {},
+}: {
+  state: any; error: Error | null;
+  probeList?: ProbeEntry[];
+  selectedProbeId?: number | null;
+  onSelectProbe?: (id: number | null) => void;
+}) {
   if (error) return <ApiError error={error} />;
   if (!state) {
     return <div className="text-xs text-muted-foreground italic animate-pulse">LOADING TELEMETRY…</div>;
   }
-  const { probe, mannies, stowedMannies, sectorObjects, inventory } = state;
-  const sector = probe.sector ?? { x: 0, y: 0, z: 0 };
+  const { probe, mannies, stowedMannies, sectorObjects, inventory, scan } = state;
+  const sector = probe.sector ?? probe.movement?.target ?? probe.movement?.origin ?? { x: 0, y: 0, z: 0 };
+  const defaultId = probeList.find(p => p.isDefault)?.id ?? probeList[0]?.id ?? null;
+  const currentId = selectedProbeId ?? defaultId;
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -103,8 +150,34 @@ function TelemetryPanel({ state, error }: { state: any; error: Error | null }) {
         <span className="text-xs text-primary glow-green">{probe.status?.toUpperCase()}</span>
       </div>
       <div>
-        <div className="text-lg font-bold glow-green tracking-wider">{probe.name}</div>
-        <div className="text-xs text-muted-foreground mt-0.5">SECTOR [{sector.x},{sector.y},{sector.z}]</div>
+        {probeList.length > 1 ? (
+          <div className="relative flex items-center gap-1">
+            <select
+              value={currentId ?? ""}
+              onChange={e => {
+                const id = Number(e.target.value);
+                onSelectProbe(id === defaultId ? null : id);
+              }}
+              className="text-lg font-bold tracking-wider bg-transparent border-none outline-none cursor-pointer text-primary glow-green flex-1 pr-4"
+              style={{ WebkitAppearance: "none", appearance: "none" }}
+              title="Switch probe"
+            >
+              {probeList.map(p => (
+                <option key={p.id} value={p.id} style={{ background: "hsl(222 20% 8%)", color: "hsl(150 80% 55%)" }}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <span className="text-primary text-xs pointer-events-none shrink-0 -ml-4">▾</span>
+          </div>
+        ) : (
+          <div className="text-lg font-bold glow-green tracking-wider">{probe.name}</div>
+        )}
+        <div className="text-xs text-muted-foreground mt-0.5">
+          {probe.status === "accelerating" || probe.status === "cruising" || probe.status === "decelerating"
+            ? `→ [${sector.x},${sector.y},${sector.z}]`
+            : `SECTOR [${sector.x},${sector.y},${sector.z}]`}
+        </div>
       </div>
       <div className="space-y-2">
         <div>
@@ -118,6 +191,7 @@ function TelemetryPanel({ state, error }: { state: any; error: Error | null }) {
           </div>
         </div>
         <GaugeBar label="HULL" value={probe.integrityPercent} />
+        <ScanReadinessBar scan={scan} />
         <div className="flex justify-between text-xs">
           <span className="text-muted-foreground">CARGO</span>
           <span className="text-muted-foreground">{(inventory?.usedCapacity ?? 0).toFixed(2)}/{inventory?.capacity ?? 0} ECE</span>
@@ -178,13 +252,7 @@ function CopyButton({ text }: { text: string }) {
 function ContainersPanel({ refetchSignal }: { refetchSignal: number }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["log-containers", refetchSignal],
-    queryFn: async () => {
-      const r = await fetch(`${BASE}/api/vng/log/containers`);
-      if (!r.ok) throw new Error(`Containers fetch failed (${r.status})`);
-      const json = await r.json();
-      if (json.error) throw new Error(json.error);
-      return json;
-    },
+    queryFn: () => fetchJson(`${BASE}/api/vng/log/containers`),
     refetchInterval: 30000,
   });
 
@@ -229,7 +297,7 @@ function ContainersPanel({ refetchSignal }: { refetchSignal: number }) {
   };
 
   return (
-    <div className="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto">
+    <div className="space-y-4">
 
       {/* On-board containers */}
       <div className="space-y-2">
@@ -310,13 +378,7 @@ function ContainersPanel({ refetchSignal }: { refetchSignal: number }) {
 function SectorsPanel({ refetchSignal }: { refetchSignal: number }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["log-sectors", refetchSignal],
-    queryFn: async () => {
-      const r = await fetch(`${BASE}/api/vng/log/sectors`);
-      if (!r.ok) throw new Error(`Sectors fetch failed (${r.status})`);
-      const json = await r.json();
-      if (json.error) throw new Error(json.error);
-      return json;
-    },
+    queryFn: () => fetchJson(`${BASE}/api/vng/log/sectors`),
     refetchInterval: 30000,
   });
 
@@ -333,7 +395,7 @@ function SectorsPanel({ refetchSignal }: { refetchSignal: number }) {
   return (
     <div className="space-y-2">
       <div className="text-xs text-muted-foreground tracking-widest">VISITED SECTORS ({sectors.length})</div>
-      <div className="space-y-2 max-h-[calc(100vh-300px)] overflow-y-auto">
+      <div className="space-y-2">
         {sectors.map((s: any) => (
           <div key={s.id} className="border border-border rounded text-xs overflow-hidden">
             {/* Header — always visible */}
@@ -425,44 +487,35 @@ function ScoutPanel({ initialTarget }: { initialTarget?: { x: number; y: number;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    if (!initialTarget) return;
-    setCoords({ x: String(initialTarget.x), y: String(initialTarget.y), z: String(initialTarget.z) });
-    setResult(null);
-    setError(null);
-  }, [initialTarget]);
-
-  // Auto-fire scan when coords are populated by initialTarget
-  const prevTarget = useRef<typeof initialTarget>(null);
-  useEffect(() => {
-    if (!initialTarget) return;
-    if (prevTarget.current === initialTarget) return;
-    prevTarget.current = initialTarget;
-    const x = initialTarget.x, y = initialTarget.y, z = initialTarget.z;
-    setLoading(true); setError(null); setResult(null);
-    fetch(`${BASE}/api/vng/log/scout?x=${x}&y=${y}&z=${z}`)
-      .then(r => r.json())
-      .then(data => { if (data.error) throw new Error(data.error); setResult(data); })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [initialTarget]);
-
-  const scout = async () => {
-    const x = parseInt(coords.x, 10);
-    const y = parseInt(coords.y, 10);
-    const z = parseInt(coords.z, 10);
-    if ([x, y, z].some(isNaN)) { setError("Enter valid integers for x, y, z"); return; }
+  const doScout = useCallback(async (x: number, y: number, z: number) => {
     setLoading(true); setError(null); setResult(null);
     try {
-      const r = await fetch(`${BASE}/api/vng/log/scout?x=${x}&y=${y}&z=${z}`);
-      const data = await r.json();
-      if (data.error) throw new Error(data.error);
+      const data = await fetchJson(`${BASE}/api/vng/log/scout?x=${x}&y=${y}&z=${z}`);
       setResult(data);
     } catch (e: any) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    if (!initialTarget) return;
+    setCoords({ x: String(initialTarget.x), y: String(initialTarget.y), z: String(initialTarget.z) });
+    setResult(null); setError(null);
+  }, [initialTarget]);
+
+  const prevTarget = useRef<typeof initialTarget>(null);
+  useEffect(() => {
+    if (!initialTarget || prevTarget.current === initialTarget) return;
+    prevTarget.current = initialTarget;
+    doScout(initialTarget.x, initialTarget.y, initialTarget.z);
+  }, [initialTarget, doScout]);
+
+  const scout = () => {
+    const x = parseInt(coords.x, 10), y = parseInt(coords.y, 10), z = parseInt(coords.z, 10);
+    if ([x, y, z].some(isNaN)) { setError("Enter valid integers for x, y, z"); return; }
+    doScout(x, y, z);
   };
 
   const coord = (k: "x" | "y" | "z") => (
@@ -495,7 +548,19 @@ function ScoutPanel({ initialTarget }: { initialTarget?: { x: number; y: number;
 
       {error && <div className="text-xs text-destructive">{error}</div>}
 
-      {result && (
+      {result?.unavailable && (
+        <div className="flex items-start gap-2 text-xs text-amber-400/80 bg-amber-400/5 border border-amber-400/20 rounded p-2">
+          <span className="mt-0.5">⏳</span>
+          <div>
+            <div>Sensor data not ready — probe still collecting readings for this sector.</div>
+            {result.retryIn && (
+              <div className="text-muted-foreground mt-0.5">Try again in {result.retryIn}.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {result && !result.unavailable && (
         <div className="space-y-2">
           <div className="text-xs text-foreground font-bold glow-green">
             [{result.x},{result.y},{result.z}]
@@ -520,11 +585,7 @@ function ScoutPanel({ initialTarget }: { initialTarget?: { x: number; y: number;
 function ScheduledPanel({ refetchSignal }: { refetchSignal: number }) {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["scheduled-actions", refetchSignal],
-    queryFn: async () => {
-      const r = await fetch(`${BASE}/api/vng/scheduled`);
-      if (!r.ok) throw new Error(`Scheduled fetch failed (${r.status})`);
-      return r.json();
-    },
+    queryFn: () => fetchJson(`${BASE}/api/vng/scheduled`),
     refetchInterval: 15000,
   });
 
@@ -595,6 +656,17 @@ export default function Commander() {
   const [sideTab, setSideTab] = useState<SideTab>("telemetry");
   const [logRefetch, setLogRefetch] = useState(0);
   const [scoutTarget, setScoutTarget] = useState<{ x: number; y: number; z: number } | null>(null);
+  const [selectedProbeId, setSelectedProbeId] = useState<number | null>(null);
+
+  // Fill-window-width preference. Pane sizes persist via the panel group's
+  // autoSaveId; this boolean is the only value we hand-persist.
+  const [fillWidth, setFillWidth] = useState<boolean>(() => {
+    try { return localStorage.getItem("pc-fill-width") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("pc-fill-width", fillWidth ? "1" : "0"); } catch {}
+  }, [fillWidth]);
+  const isDesktop = useIsDesktop();
 
   const handleScoutRequest = useCallback((x: number, y: number, z: number) => {
     setScoutTarget({ x, y, z });
@@ -602,36 +674,48 @@ export default function Commander() {
   }, []);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  const { data: probeListData } = useQuery({
+    queryKey: ["probe-list"],
+    queryFn: () => fetchJson(`${BASE}/api/vng/probes`),
+    refetchInterval: 60000,
+    staleTime: 30000,
+  });
+
+  const probeList: ProbeEntry[] = (probeListData?.probes ?? []).map((p: any) => ({
+    id: p.id,
+    name: p.name,
+    status: p.status,
+    isDefault: p.isDefault ?? (p.id === probeListData?.defaultProbeId),
+  }));
+
   const { data: state, error: stateError } = useQuery({
-    queryKey: ["probe-state"],
-    queryFn: async () => {
-      const r = await fetch(`${BASE}/api/vng/state`);
-      if (!r.ok) {
-        let msg = `State fetch failed (${r.status})`;
-        try { const j = await r.json(); if (j.error) msg = j.error; } catch {}
-        throw new Error(msg);
-      }
-      const json = await r.json();
-      if (json.error) throw new Error(json.error);
-      return json;
-    },
+    queryKey: ["probe-state", selectedProbeId],
+    queryFn: () => fetchJson(
+      `${BASE}/api/vng/state${selectedProbeId ? `?probeId=${selectedProbeId}` : ""}`
+    ),
     refetchInterval: 30000,
     retry: 1,
   });
+
+  const queryClient = useQueryClient();
 
   // Fetch globe sectors at Commander level so GlobeMap always receives live data
   // immediately when the tab opens, regardless of when the user navigates to it.
   const { data: sectorsData } = useQuery({
     queryKey: ["sectors-globe"],
-    queryFn: async () => {
-      const r = await fetch(`${BASE}/api/vng/log/sectors`, { cache: "no-store" });
-      if (!r.ok) throw new Error(`sectors ${r.status}`);
-      return r.json();
-    },
+    queryFn: () => fetchJson(`${BASE}/api/vng/log/sectors`, { cache: "no-store" }),
     retry: 1,
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
+
+  // Scan all visited sectors via SCUT/scout API, then refetch globe data
+  const handleRefreshSectors = useCallback(async () => {
+    const r = await fetch(`${BASE}/api/vng/log/sectors/refresh`, { method: "POST" });
+    if (!r.ok) throw new Error(`Refresh failed: ${r.status}`);
+    await queryClient.invalidateQueries({ queryKey: ["sectors-globe"] });
+    await queryClient.refetchQueries({ queryKey: ["sectors-globe"] });
+  }, [queryClient]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -720,128 +804,171 @@ export default function Commander() {
     { id: "scheduled", label: "SCHED" },
   ];
 
-  return (
-    <div className="min-h-screen flex flex-col lg:flex-row gap-4 p-4 max-w-7xl mx-auto">
-      {/* Sidebar */}
-      <div className="lg:w-72 shrink-0 flex flex-col gap-2">
-        <div className="text-xs text-muted-foreground tracking-[0.3em] glow-green">
-          VON NEUMANN PROBE
-        </div>
-        {/* Tab bar */}
-        <div className="flex border border-border rounded overflow-hidden">
-          {TABS.map(tab => (
-            <button key={tab.id} onClick={() => setSideTab(tab.id)}
-              className={`flex-1 py-1.5 px-0.5 text-[10px] tracking-wide whitespace-nowrap transition-all ${
-                sideTab === tab.id
-                  ? "bg-primary/20 text-primary"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}>
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="border border-border border-glow rounded p-4 flex-1 scanlines">
-          {sideTab === "telemetry" && <TelemetryPanel state={state} error={stateError as Error | null} />}
-          {sideTab === "containers" && <ContainersPanel refetchSignal={logRefetch} />}
-          {sideTab === "sectors" && <SectorsPanel refetchSignal={logRefetch} />}
-          {sideTab === "scout" && <ScoutPanel initialTarget={scoutTarget} />}
-          {sideTab === "scheduled" && <ScheduledPanel refetchSignal={logRefetch} />}
-          {sideTab === "globe" && (
-            <GlobeMap
-              probeX={globeCenter.x}
-              probeY={globeCenter.y}
-              probeZ={globeCenter.z}
-              isMoving={globeCenter.isMoving}
-              priorX={globeCenter.px}
-              priorY={globeCenter.py}
-              priorZ={globeCenter.pz}
-              sectorsData={sectorsData}
-              onScoutRequest={handleScoutRequest}
-            />
-          )}
-          {sideTab === "system" && (
-            <SystemMap
-              probe={state?.probe}
-              sectorObjects={state?.sectorObjects}
-              otherProbes={state?.otherProbes}
-              mannies={state?.mannies}
-              isMoving={globeCenter.isMoving}
-              sectorUnavailable={state?.sectorUnavailable}
-              onScoutRequest={handleScoutRequest}
-            />
-          )}
-        </div>
-
-        <div className="text-xs text-muted-foreground text-center tracking-widest opacity-40">
-          AUTO-REFRESH 30s
-        </div>
+  const leftContent = (
+    <>
+      <div className="text-xs text-muted-foreground tracking-[0.3em] glow-green">
+        VON NEUMANN PROBE
+      </div>
+      {/* Tab bar */}
+      <div className="flex border border-border rounded overflow-hidden">
+        {TABS.map(tab => (
+          <button key={tab.id} onClick={() => setSideTab(tab.id)}
+            className={`flex-1 py-1.5 px-0.5 text-[10px] tracking-wide whitespace-nowrap transition-all ${
+              sideTab === tab.id
+                ? "bg-primary/20 text-primary"
+                : "text-muted-foreground hover:text-foreground"
+            }`}>
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      {/* Chat */}
-      <div className="flex-1 flex flex-col min-h-0">
-        <div className="text-xs text-muted-foreground tracking-[0.3em] mb-3 glow-cyan">
-          OPERATOR TERMINAL
-        </div>
+      {/* min-h-0 + overflow-y-auto: react-resizable-panels forces overflow:hidden
+          on the panel, so tab content must scroll here, inside the panel. */}
+      <div className="border border-border border-glow rounded p-4 flex-1 min-h-0 overflow-y-auto scanlines">
+        {sideTab === "telemetry" && (
+          <TelemetryPanel
+            state={state}
+            error={stateError as Error | null}
+            probeList={probeList}
+            selectedProbeId={selectedProbeId}
+            onSelectProbe={setSelectedProbeId}
+          />
+        )}
+        {sideTab === "containers" && <ContainersPanel refetchSignal={logRefetch} />}
+        {sideTab === "sectors" && <SectorsPanel refetchSignal={logRefetch} />}
+        {sideTab === "scout" && <ScoutPanel initialTarget={scoutTarget} />}
+        {sideTab === "scheduled" && <ScheduledPanel refetchSignal={logRefetch} />}
+        {sideTab === "globe" && (
+          <GlobeMap
+            probeX={globeCenter.x}
+            probeY={globeCenter.y}
+            probeZ={globeCenter.z}
+            isMoving={globeCenter.isMoving}
+            priorX={globeCenter.px}
+            priorY={globeCenter.py}
+            priorZ={globeCenter.pz}
+            sectorsData={sectorsData}
+            onRefreshSectors={handleRefreshSectors}
+          />
+        )}
+        {sideTab === "system" && (
+          <SystemMap
+            probe={state?.probe}
+            sectorObjects={state?.sectorObjects}
+            otherProbes={state?.otherProbes}
+            mannies={state?.mannies}
+            isMoving={globeCenter.isMoving}
+            sectorUnavailable={state?.sectorUnavailable}
+            onScoutRequest={handleScoutRequest}
+          />
+        )}
+      </div>
 
-        <div className="flex-1 border border-border border-glow rounded overflow-y-auto p-4 space-y-4 min-h-[400px] max-h-[calc(100vh-220px)] bg-card/30 scanlines">
-          {messages.map((msg, i) => (
-            <div key={i}>
-              {msg.role === "user" ? (
-                <div className="flex gap-2 items-start">
-                  <span className="text-accent text-xs shrink-0 mt-0.5 glow-cyan">OPERATOR›</span>
-                  <span className="text-foreground text-sm">{msg.content}</span>
+      <div className="text-xs text-muted-foreground text-center tracking-widest opacity-40">
+        AUTO-REFRESH 30s
+      </div>
+    </>
+  );
+
+  const rightContent = (
+    <>
+      <div className="text-xs text-muted-foreground tracking-[0.3em] mb-3 glow-cyan">
+        OPERATOR TERMINAL
+      </div>
+
+      <div className="flex-1 min-h-0 border border-border border-glow rounded overflow-y-auto p-4 space-y-4 bg-card/30 scanlines">
+        {messages.map((msg, i) => (
+          <div key={i}>
+            {msg.role === "user" ? (
+              <div className="flex gap-2 items-start">
+                <span className="text-accent text-xs shrink-0 mt-0.5 glow-cyan">OPERATOR›</span>
+                <span className="text-foreground text-sm">{msg.content}</span>
+              </div>
+            ) : (
+              <div className="flex gap-2 items-start">
+                <span className="text-primary text-xs shrink-0 mt-0.5 glow-green">PROBE›</span>
+                <div className="flex-1"><AssistantBubble events={msg.events} /></div>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {isRunning && (
+          <div className="flex gap-2 items-start">
+            <span className="text-primary text-xs shrink-0 mt-0.5 glow-green pulse-active">PROBE›</span>
+            <div className="flex-1">
+              {liveEvents.length > 0 ? (
+                <div className="space-y-1.5 border border-border rounded p-3 bg-card/60 border-glow">
+                  {liveEvents.filter(e =>
+                    e.type === "message" || e.type === "action" || e.type === "result" ||
+                    e.type === "status" || e.type === "error"
+                  ).map((e, i) => <EventRow key={i} event={e} />)}
+                  <div className="text-xs text-primary cursor-blink" />
                 </div>
               ) : (
-                <div className="flex gap-2 items-start">
-                  <span className="text-primary text-xs shrink-0 mt-0.5 glow-green">PROBE›</span>
-                  <div className="flex-1"><AssistantBubble events={msg.events} /></div>
-                </div>
+                <span className="text-xs text-muted-foreground pulse-active">PROCESSING…</span>
               )}
             </div>
-          ))}
-
-          {isRunning && (
-            <div className="flex gap-2 items-start">
-              <span className="text-primary text-xs shrink-0 mt-0.5 glow-green pulse-active">PROBE›</span>
-              <div className="flex-1">
-                {liveEvents.length > 0 ? (
-                  <div className="space-y-1.5 border border-border rounded p-3 bg-card/60 border-glow">
-                    {liveEvents.filter(e =>
-                      e.type === "message" || e.type === "action" || e.type === "result" ||
-                      e.type === "status" || e.type === "error"
-                    ).map((e, i) => <EventRow key={i} event={e} />)}
-                    <div className="text-xs text-primary cursor-blink" />
-                  </div>
-                ) : (
-                  <span className="text-xs text-muted-foreground pulse-active">PROCESSING…</span>
-                )}
-              </div>
-            </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
-
-        <div className="mt-3 border border-border border-glow rounded p-3 bg-card/30">
-          <div className="flex gap-3 items-end">
-            <div className="flex-1">
-              <div className="text-xs text-muted-foreground mb-1.5 tracking-widest">
-                COMMAND INPUT {isRunning && <span className="text-yellow-400 pulse-active">● EXECUTING</span>}
-              </div>
-              <textarea
-                value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown}
-                disabled={isRunning} rows={2}
-                placeholder="Tell your probe what to do… (Enter to send, Shift+Enter for newline)"
-                className="w-full bg-transparent text-foreground text-sm placeholder:text-muted-foreground/40 resize-none outline-none font-mono"
-              />
-            </div>
-            <button onClick={sendCommand} disabled={isRunning || !input.trim()}
-              className="shrink-0 px-4 py-2 text-xs tracking-widest font-bold border rounded transition-all border-primary text-primary hover:bg-primary hover:text-primary-foreground disabled:opacity-30 disabled:cursor-not-allowed">
-              {isRunning ? "…" : "EXECUTE"}
-            </button>
           </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="mt-3 border border-border border-glow rounded p-3 bg-card/30">
+        <div className="flex gap-3 items-end">
+          <div className="flex-1">
+            <div className="text-xs text-muted-foreground mb-1.5 tracking-widest">
+              COMMAND INPUT {isRunning && <span className="text-yellow-400 pulse-active">● EXECUTING</span>}
+            </div>
+            <textarea
+              value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown}
+              disabled={isRunning} rows={2}
+              placeholder="Tell your probe what to do… (Enter to send, Shift+Enter for newline)"
+              className="w-full bg-transparent text-foreground text-sm placeholder:text-muted-foreground/40 resize-none outline-none font-mono"
+            />
+          </div>
+          <button onClick={sendCommand} disabled={isRunning || !input.trim()}
+            className="shrink-0 px-4 py-2 text-xs tracking-widest font-bold border rounded transition-all border-primary text-primary hover:bg-primary hover:text-primary-foreground disabled:opacity-30 disabled:cursor-not-allowed">
+            {isRunning ? "…" : "EXECUTE"}
+          </button>
         </div>
       </div>
-    </div>
+    </>
+  );
+
+  return (
+    <>
+      <button
+        onClick={() => setFillWidth(v => !v)}
+        aria-pressed={fillWidth}
+        aria-label={fillWidth ? "Constrain width" : "Fill window width"}
+        title={fillWidth ? "Constrain width" : "Fill window width"}
+        className="fixed top-2 right-2 z-50 p-1.5 border border-border rounded bg-card/60 text-muted-foreground transition-all hover:text-primary hover:border-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        {fillWidth ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+      </button>
+
+      <div className={cn("min-h-screen p-4", !fillWidth && "max-w-7xl mx-auto")}>
+        {isDesktop ? (
+          // Fixed height (p-4 = 2rem vertical) gives the group a resolved height for
+          // its drag math; parent stays min-h-screen so the mobile stack can grow.
+          <ResizablePanelGroup direction="horizontal" autoSaveId="pc-panes" className="h-[calc(100vh-2rem)]">
+            <ResizablePanel defaultSize={22} minSize={18} maxSize={45} className="flex flex-col gap-2 min-h-0">
+              {leftContent}
+            </ResizablePanel>
+            <ResizableHandle withHandle className="mx-2" />
+            <ResizablePanel defaultSize={78} minSize={40} className="flex flex-col min-h-0">
+              {rightContent}
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">{leftContent}</div>
+            <div className="flex flex-col min-h-[70vh]">{rightContent}</div>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
