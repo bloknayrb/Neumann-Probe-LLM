@@ -7,12 +7,12 @@ game only through a custom **stdio MCP server** that exposes the 12 safe tools.
 
 ## Endpoints (all under `/api/vng`)
 
-| Method + path            | Purpose |
-|--------------------------|---------|
-| `GET  /state`            | Live probe telemetry (unchanged). |
-| `POST /command`          | Natural-language order. Spawns headless Claude, streams SSE. Body `{ command, sessionId? }`. |
-| `POST /tool`             | **Direct tool call, no LLM.** Body `{ tool, args?, confirm? }`. `200 {ok,result}`; irreversible tool without `confirm:true` → `409 {requiresConfirmation:true,tool}`; error → `500 {error}`. |
-| `GET  /scheduled`, `DELETE /scheduled/:id` | Scheduled-action management (unchanged). |
+| Method + path                              | Purpose                                                                                                                                                                                                                                                              |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET  /state`                              | Live probe telemetry. `?probeId=N` targets another owned probe.                                                                                                                                                                                                      |
+| `POST /command`                            | Natural-language order. Spawns headless Claude, streams SSE. Body `{ command, sessionId?, probeId? }`. A non-integer `probeId` → `400`.                                                                                                                              |
+| `POST /tool`                               | **Direct tool call, no LLM.** Body `{ tool, args?, confirm? }`. `200 {ok,result}`; irreversible tool without `confirm:true` → `409 {requiresConfirmation:true,tool}`; error → `500 {error}`. Always targets the main probe — it has no `probeId`, unlike `/command`. |
+| `GET  /scheduled`, `DELETE /scheduled/:id` | Scheduled-action management (unchanged).                                                                                                                                                                                                                             |
 
 SSE event shapes emitted by `/command` (unchanged, frontend-compatible):
 `{type:"status",message}`, `{type:"message",content}`,
@@ -36,13 +36,21 @@ schedule_action, cancel_scheduled_action`.
 Loaded from the monorepo-root `.env` automatically (via `src/load-env.ts`,
 Node's native `process.loadEnvFile`, no dotenv dependency).
 
-- `VNG_API_KEY`  (required) — game API auth; forwarded to the MCP subprocess.
-- `PORT`         (required) — server bind port.
+- `VNG_API_KEY` (required) — game API auth; forwarded to the MCP subprocess.
+- `PORT` (required) — server bind port.
 - `CLAUDE_BRAIN_MODEL` (optional, default `sonnet`) — model passed to `--model`.
-- `CLAUDE_BIN`   (optional) — path to the `claude` executable. Auto-detected at
+- `CLAUDE_BIN` (optional) — path to the `claude` executable. Auto-detected at
   `~/.local/bin/claude(.exe)`, else falls back to `claude` on PATH.
 - `VNG_DATA_DIR` (set internally) — passed to the MCP subprocess so its
-  bookkeeping writes to the same `data/` dir as the server.
+  bookkeeping writes to the same `data/` dir as the server. Takes precedence
+  over `DATA_DIR`. `file-store.ts` exports the resolved dir; import it rather
+  than re-deriving one, or the server and its subprocess can split bookkeeping.
+- `DATA_DIR` (optional) — overrides the data dir outright. Set by the
+  Electron app, whose packaged cwd is unpredictable, to the user-data folder.
+- `VNG_PROBE_ID` (set internally) — passed to the MCP subprocess to scope every
+  tool call to the probe the operator picked in the UI. Unset = main probe. It
+  travels by env, not as a tool argument, so the brain can neither see nor
+  override it, and the config is rewritten per request.
 
 **Subscription auth:** the spawned CLI inherits the server env with
 `ANTHROPIC_API_KEY` **deleted**, forcing OAuth (subscription) instead of API
@@ -74,24 +82,27 @@ The React UI at `artifacts/probe-commander` is where you drive the probe. It
 requires two env vars and reaches the api-server through a Vite `/api` proxy.
 
 ```powershell
-# from the repo root, in PowerShell (NOT git-bash — it mangles BASE_PATH=/):
-$env:PORT='24340'; $env:BASE_PATH='/'
+# from the repo root, in PowerShell:
+$env:PORT='24340'
 pnpm --filter @workspace/probe-commander run dev
 # -> http://localhost:24340/   (needs the api-server already running on :8080)
 ```
 
-- `PORT` = frontend port (keep it different from the api-server's 8080).
-- `BASE_PATH` = Vite base; `/` for local. The UI derives its API base from this,
-  and a dev proxy in `vite.config.ts` forwards `/api` → `http://localhost:8080`
-  (override target with `API_TARGET`). SSE streaming for `/command` passes through.
+- `PORT` = frontend port (required — `vite.config.ts` throws without it). Keep it
+  different from the api-server's 8080.
+- `BASE_PATH` = Vite base. **No longer needs setting**: it defaults to `/`
+  (upstream added the default for local/Electron builds; only Replit sets it).
+  This retires the old git-bash trap — passing `BASE_PATH=/` through git-bash got
+  MSYS-mangled into a Windows path, so the fix now is simply not to pass it.
+  The UI derives its API base from it, and a dev proxy in `vite.config.ts`
+  forwards `/api` → `http://localhost:8080` (override with `API_TARGET`). SSE
+  streaming for `/command` passes through.
 
-**Windows install note:** the committed `pnpm-lock.yaml` was generated on Linux,
-so pnpm skipped Windows-native binaries. Fixed by adding to `.npmrc`
-(`supportedArchitectures.os[]=win32`, `cpu[]=x64`, `libc[]=none`) and installing
-the platform packages: `@rollup/rollup-win32-x64-msvc@4.60.3`,
-`lightningcss-win32-x64-msvc@1.32.0`, `@tailwindcss/oxide-win32-x64-msvc@4.3.0`
-(+ esbuild's win32 binary via `pnpm install --force`). If a fresh `pnpm install`
-regresses this, re-add those.
+**Windows install note:** see the "Windows / pnpm" section of `CLAUDE.md`. Short
+version: the cause was upstream's `pnpm-workspace.yaml` `overrides` excluding
+win32 binaries (now fixed upstream), the explicit `*-win32-x64-msvc` devDeps in
+`probe-commander/package.json` are what carried us, and `.npmrc`'s
+`supportedArchitectures` block is dead config that pnpm 10 never reads.
 
 ## Multi-turn note
 

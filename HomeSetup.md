@@ -2,17 +2,35 @@
 
 Step-by-step instructions for running Probe Commander on your Windows PC. No coding experience required — just follow each step in order.
 
+> **⚠️ This guide is upstream's and does not describe this fork.** It was written
+> for the original OpenAI-compatible brain, which this fork replaced with the
+> local Claude Code CLI running on your own Claude subscription. Specifically:
+>
+> - **Ignore every AI-provider step** (OpenAI / Groq / Ollama sign-ups, base
+>   URLs, AI API keys). There is no AI key here. Install the Claude Code CLI and
+>   sign in once with `claude` → `/login`.
+> - **Ignore the step that says to edit `src/routes/vng/index.ts` and change
+>   `model: "gpt-5.4"`.** That code no longer exists. To change the brain's
+>   model, set `CLAUDE_BRAIN_MODEL` (default `sonnet`).
+> - **Ignore the step about hand-adding a Vite proxy** — `vite.config.ts`
+>   already has one.
+> - Step 5's note that the repo ships the original author's explored-sector data
+>   no longer applies: `artifacts/api-server/data/` is untracked here, so your
+>   game state stays yours.
+>
+> See `HARNESS-CLAUDE.md` for the setup that actually matches this code.
+
 ---
 
 ## Before you start — install the tools
 
 You need three free programs installed before anything else. If you already have them, skip ahead.
 
-| Program | Minimum version | Download |
-|---------|----------------|----------|
-| **Node.js** | v20 | https://nodejs.org — click the **LTS** button |
-| **pnpm** | v10 | Installed via terminal after Node.js (see below) |
-| **Git** | any | https://git-scm.com |
+| Program     | Minimum version | Download                                         |
+| ----------- | --------------- | ------------------------------------------------ |
+| **Node.js** | v20             | https://nodejs.org — click the **LTS** button    |
+| **pnpm**    | v10             | Installed via terminal after Node.js (see below) |
+| **Git**     | any             | https://git-scm.com                              |
 
 **How to open a terminal (Command Prompt):**
 Press `Win + R`, type `cmd`, press Enter — or search for "Command Prompt" in the Start menu. All commands in this guide are typed here.
@@ -77,21 +95,21 @@ You need an account on **neumann-probe.net** with your own probe. The app talks 
 
 When you type a command like "have Socrates mine carbon into the container", the app sends it to an AI that figures out what to do. You need to pick one AI service:
 
-| Service | Cost | Sign up |
-|---------|------|---------|
-| **OpenAI** | Paid (pay-as-you-go) | https://platform.openai.com |
-| **Groq** | Free tier, fast | https://console.groq.com |
-| **Ollama** | Free, runs on your PC | https://ollama.com |
+| Service    | Cost                  | Sign up                     |
+| ---------- | --------------------- | --------------------------- |
+| **OpenAI** | Paid (pay-as-you-go)  | https://platform.openai.com |
+| **Groq**   | Free tier, fast       | https://console.groq.com    |
+| **Ollama** | Free, runs on your PC | https://ollama.com          |
 
 **Groq is recommended** if you want something free and quick to set up.
 
 Once signed up, you'll need two things from your chosen service: a **Base URL** and an **API key**. Use these values:
 
-| Service | Base URL | API key |
-|---------|----------|---------|
-| OpenAI | `https://api.openai.com/v1` | From platform.openai.com → API keys |
-| Groq | `https://api.groq.com/openai/v1` | From console.groq.com → API keys |
-| Ollama | `http://localhost:11434/v1` | Type any word (e.g. `ollama`) |
+| Service | Base URL                         | API key                             |
+| ------- | -------------------------------- | ----------------------------------- |
+| OpenAI  | `https://api.openai.com/v1`      | From platform.openai.com → API keys |
+| Groq    | `https://api.groq.com/openai/v1` | From console.groq.com → API keys    |
+| Ollama  | `http://localhost:11434/v1`      | Type any word (e.g. `ollama`)       |
 
 > **Ollama extra step:** After installing from https://ollama.com, open a new Command Prompt and run `ollama pull llama3.1` to download the AI model, then `ollama serve` to start it. Keep that window open.
 
@@ -147,6 +165,7 @@ echo {"sectors":[]}> artifacts\api-server\data\visited-sectors.json
 > If you get an error saying the file or folder doesn't exist, skip this step — the app will create the file on its own when it first starts.
 
 > **Using the desktop app instead?** The Electron version stores its data in `%APPDATA%\Probe Commander\data\`. To reset sector history there, run in PowerShell:
+>
 > ```
 > Set-Content "$env:APPDATA\Probe Commander\data\visited-sectors.json" '{"sectors":[]}'
 > ```
@@ -217,6 +236,7 @@ pnpm --filter @workspace/api-server run dev
 ```
 
 Wait until you see a line like:
+
 ```
 Server listening  {"port":8080}
 ```
@@ -228,6 +248,7 @@ pnpm --filter @workspace/probe-commander run dev
 ```
 
 Wait until you see:
+
 ```
 VITE ready in ... ms  ➜  Local: http://localhost:5173/
 ```
@@ -255,6 +276,7 @@ pnpm --filter @workspace/electron-app run dist:win
 ```
 
 It will automatically:
+
 1. Build the backend
 2. Build the frontend
 3. Compile the Electron wrapper
@@ -267,6 +289,7 @@ The zip (`Probe-Commander-win.zip`) is created inside `artifacts\electron-app\re
 ### What happens on first launch
 
 A setup screen appears asking for:
+
 - Your **neumann-probe.net API key**
 - Your **AI provider** (OpenAI, Groq, or Ollama) and its key
 
@@ -278,25 +301,25 @@ These are saved privately on your computer. The app remembers them from then on.
 
 ## Troubleshooting
 
-| What you see | Most likely cause | What to do |
-|---|---|---|
-| `API ERROR` in every panel | Wrong or missing `VNG_API_KEY` | Double-check the key in `artifacts\api-server\.env` and that you have a neumann-probe.net account |
-| `PORT environment variable is required` | Missing `.env` file | Create the `.env` files from Step 4 |
-| AI commands return errors | Wrong Base URL or API key | Re-check Step 3b; for Ollama also check Step 7 |
-| Panels load forever | Backend not running | Make sure Window 1 started without errors; look for red text |
-| Map/globe shows no data | Frontend can't reach the backend | Confirm the proxy block from Step 6 is saved and restart Window 2 |
-| Ollama errors about the model | Model not downloaded | Run `ollama pull llama3.1` in a new Command Prompt |
-| Map shows someone else's route | Old sector history in the repo | Run the command from Step 5 |
-| `'pnpm' is not recognized` | pnpm not installed | Re-run `npm install -g pnpm` and open a fresh Command Prompt |
+| What you see                            | Most likely cause                | What to do                                                                                        |
+| --------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `API ERROR` in every panel              | Wrong or missing `VNG_API_KEY`   | Double-check the key in `artifacts\api-server\.env` and that you have a neumann-probe.net account |
+| `PORT environment variable is required` | Missing `.env` file              | Create the `.env` files from Step 4                                                               |
+| AI commands return errors               | Wrong Base URL or API key        | Re-check Step 3b; for Ollama also check Step 7                                                    |
+| Panels load forever                     | Backend not running              | Make sure Window 1 started without errors; look for red text                                      |
+| Map/globe shows no data                 | Frontend can't reach the backend | Confirm the proxy block from Step 6 is saved and restart Window 2                                 |
+| Ollama errors about the model           | Model not downloaded             | Run `ollama pull llama3.1` in a new Command Prompt                                                |
+| Map shows someone else's route          | Old sector history in the repo   | Run the command from Step 5                                                                       |
+| `'pnpm' is not recognized`              | pnpm not installed               | Re-run `npm install -g pnpm` and open a fresh Command Prompt                                      |
 
 ---
 
 ## Quick reference — what each setting does
 
-| Setting | File | What it's for |
-|---------|------|---------------|
-| `VNG_API_KEY` | `api-server\.env` | Connects to neumann-probe.net (**required**) |
-| `AI_INTEGRATIONS_OPENAI_BASE_URL` | `api-server\.env` | Where to send AI commands (**required**) |
-| `AI_INTEGRATIONS_OPENAI_API_KEY` | `api-server\.env` | Authenticates with your AI service (**required**) |
-| `PORT` | both `.env` files | Which port each server runs on |
-| `BASE_PATH` | auto-detected | Defaults to `/`; set by Replit automatically when hosted there |
+| Setting                           | File              | What it's for                                                  |
+| --------------------------------- | ----------------- | -------------------------------------------------------------- |
+| `VNG_API_KEY`                     | `api-server\.env` | Connects to neumann-probe.net (**required**)                   |
+| `AI_INTEGRATIONS_OPENAI_BASE_URL` | `api-server\.env` | Where to send AI commands (**required**)                       |
+| `AI_INTEGRATIONS_OPENAI_API_KEY`  | `api-server\.env` | Authenticates with your AI service (**required**)              |
+| `PORT`                            | both `.env` files | Which port each server runs on                                 |
+| `BASE_PATH`                       | auto-detected     | Defaults to `/`; set by Replit automatically when hosted there |

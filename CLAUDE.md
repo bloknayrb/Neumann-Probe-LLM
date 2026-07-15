@@ -48,4 +48,12 @@ No test suite; verify against the live game read-only (`GET /api/vng/state`, or 
 
 ## Windows / pnpm
 
-The lockfile is Linux-generated, so Windows-native binaries get skipped on install. `.npmrc` has `supportedArchitectures.*=win32/x64` and the `@rollup/rollup-win32-x64-msvc`, `lightningcss-win32-x64-msvc`, `@tailwindcss/oxide-win32-x64-msvc` packages were added explicitly. If a fresh `pnpm install` breaks the frontend build with a missing `*.node` / `*-win32-x64-msvc` module, re-add the matching platform package (version must match the base package in the lockfile) and/or `pnpm install --force`.
+The root cause was never the Linux-generated lockfile: `pnpm-workspace.yaml` `overrides` explicitly excluded every non-linux-x64 platform binary (`"esbuild>@esbuild/win32-x64": "-"` and friends), because the upstream Replit box only needed linux. Upstream has since un-excluded win32-x64/win32-arm64 and darwin, so a plain install now resolves the right binaries.
+
+What actually keeps Windows working here are the explicit `@rollup/rollup-win32-x64-msvc`, `lightningcss-win32-x64-msvc`, and `@tailwindcss/oxide-win32-x64-msvc` devDeps in `artifacts/probe-commander/package.json` (reached via pnpm's `hoistPattern: ["*"]`). They're redundant with upstream's overrides now but harmless — their pinned versions match upstream's resolved ones. If a fresh install ever breaks the frontend with a missing `*.node` / `*-win32-x64-msvc` module, check those overrides first, then re-add the matching platform package at the lockfile's version.
+
+**`.npmrc` is dead config — do not trust it or extend it.** pnpm 10 reads `supportedArchitectures` only from `pnpm-workspace.yaml`/`package.json`, never `.npmrc` (`pnpm config get supportedArchitectures` → `undefined`). It only looked load-bearing because the default is `["current"]` → win32-x64 on this box anyway. `libc[]=none` isn't even a valid value, and `strict-peer-dependencies=false` / `auto-install-peers=false` are already the defaults (the latter is also set in the workspace file). Removing the file would neither break nor bloat the install.
+
+**Never reintroduce upstream's `allowBuilds:` block** in `pnpm-workspace.yaml` (see the note there). It's inert under pnpm 10 because `onlyBuiltDependencies` short-circuits it, but pnpm 11 drops `onlyBuiltDependencies` and makes `allowBuilds` authoritative — silently stopping esbuild from building, which takes `dist/neumann-mcp.mjs` (and therefore the brain's whole toolset) with it.
+
+Note `electron`'s ~100MB postinstall now runs on **every** install; upstream's `allowBuilds: {electron: false}` never gated it.
