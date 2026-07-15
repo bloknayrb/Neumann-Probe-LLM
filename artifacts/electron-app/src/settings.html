@@ -166,35 +166,20 @@
     <hr class="divider" />
 
     <div class="field">
-      <label for="provider">AI Provider</label>
-      <select id="provider">
-        <option value="groq">Groq (free &amp; fast — recommended)</option>
-        <option value="openai">OpenAI</option>
-        <option value="ollama">Ollama (local, runs on your PC)</option>
-        <option value="custom">Custom endpoint</option>
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="base-url">AI Base URL</label>
+      <label for="claude-bin">Claude Code CLI</label>
       <input
-        id="base-url"
+        id="claude-bin"
         type="text"
+        placeholder="Optional — leave blank to autodetect"
         spellcheck="false"
         autocomplete="off"
       />
-    </div>
-
-    <div class="field" id="api-key-field">
-      <label for="ai-key">AI API Key</label>
-      <input
-        id="ai-key"
-        type="password"
-        placeholder="Paste your API key here"
-        autocomplete="off"
-        spellcheck="false"
-      />
-      <div class="hint" id="api-key-hint"></div>
+      <div class="hint">
+        GUPPI's brain is the Claude Code CLI running on your own Claude
+        subscription — there is no AI API key to enter. Install it and sign in
+        with <code>claude</code> (then <code>/login</code>). Leave this blank
+        unless <code>claude</code> isn't on your PATH; then give its full path.
+      </div>
     </div>
 
     <div class="actions">
@@ -207,89 +192,34 @@
   </form>
 
   <script>
-    const PROVIDER_URLS = {
-      groq:   'https://api.groq.com/openai/v1',
-      openai: 'https://api.openai.com/v1',
-      ollama: 'http://localhost:11434/v1',
-      custom: '',
-    };
+    const vngKeyInput   = document.getElementById('vng-key');
+    const claudeBinInput = document.getElementById('claude-bin');
+    const saveBtn       = document.getElementById('save-btn');
+    const errorMsg      = document.getElementById('error-msg');
+    const savedBanner   = document.getElementById('saved-banner');
 
-    const providerSel = document.getElementById('provider');
-    const baseUrlInput = document.getElementById('base-url');
-    const aiKeyInput   = document.getElementById('ai-key');
-    const apiKeyField  = document.getElementById('api-key-field');
-    const apiKeyHint   = document.getElementById('api-key-hint');
-    const vngKeyInput  = document.getElementById('vng-key');
-    const saveBtn      = document.getElementById('save-btn');
-    const errorMsg     = document.getElementById('error-msg');
-    const savedBanner  = document.getElementById('saved-banner');
-
-    function applyProvider(provider) {
-      baseUrlInput.value = PROVIDER_URLS[provider] ?? '';
-      baseUrlInput.readOnly = provider !== 'custom';
-
-      if (provider === 'ollama') {
-        apiKeyField.style.display = 'block';
-        aiKeyInput.placeholder = 'Any value (e.g. ollama)';
-        apiKeyHint.textContent = 'Ollama does not check this — type anything.';
-        if (!aiKeyInput.value) aiKeyInput.value = 'ollama';
-      } else if (provider === 'groq') {
-        apiKeyField.style.display = 'block';
-        aiKeyInput.placeholder = 'Paste your Groq API key';
-        apiKeyHint.textContent = 'Get a free key at console.groq.com';
-        if (aiKeyInput.value === 'ollama') aiKeyInput.value = '';
-      } else if (provider === 'openai') {
-        apiKeyField.style.display = 'block';
-        aiKeyInput.placeholder = 'Paste your OpenAI API key';
-        apiKeyHint.textContent = 'Get a key at platform.openai.com → API keys';
-        if (aiKeyInput.value === 'ollama') aiKeyInput.value = '';
-      } else {
-        apiKeyField.style.display = 'block';
-        aiKeyInput.placeholder = 'API key for your endpoint';
-        apiKeyHint.textContent = '';
-      }
-    }
-
-    providerSel.addEventListener('change', () => applyProvider(providerSel.value));
-
-    // Pre-fill from existing config
+    // Pre-fill from existing config. Configs written before this fork replaced
+    // the OpenAI brain may still carry aiBaseUrl/aiApiKey; they're ignored and
+    // drop away on the next save.
     window.electronAPI.loadConfig().then((cfg) => {
-      if (cfg.vngApiKey)  vngKeyInput.value = cfg.vngApiKey;
-      if (cfg.aiApiKey)   aiKeyInput.value  = cfg.aiApiKey;
-
-      if (cfg.aiBaseUrl) {
-        const known = Object.entries(PROVIDER_URLS).find(([, url]) => url === cfg.aiBaseUrl);
-        if (known) {
-          providerSel.value = known[0];
-        } else if (cfg.aiBaseUrl) {
-          providerSel.value = 'custom';
-        }
-        baseUrlInput.value = cfg.aiBaseUrl;
-      }
-
-      applyProvider(providerSel.value);
+      if (cfg.vngApiKey) vngKeyInput.value = cfg.vngApiKey;
+      if (cfg.claudeBin) claudeBinInput.value = cfg.claudeBin;
     });
-
-    // Initial state
-    applyProvider(providerSel.value);
 
     document.getElementById('setup-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       errorMsg.textContent = '';
 
       const vngApiKey = vngKeyInput.value.trim();
-      const aiBaseUrl = baseUrlInput.value.trim();
-      const aiApiKey  = aiKeyInput.value.trim();
+      const claudeBin = claudeBinInput.value.trim();
 
       if (!vngApiKey) { errorMsg.textContent = 'neumann-probe.net API key is required.'; return; }
-      if (!aiBaseUrl) { errorMsg.textContent = 'AI Base URL is required.'; return; }
-      if (!aiApiKey)  { errorMsg.textContent = 'AI API key is required.'; return; }
 
       saveBtn.disabled = true;
       saveBtn.textContent = 'SAVING…';
 
       try {
-        await window.electronAPI.saveConfig({ vngApiKey, aiBaseUrl, aiApiKey });
+        await window.electronAPI.saveConfig({ vngApiKey, ...(claudeBin ? { claudeBin } : {}) });
         savedBanner.style.display = 'block';
         saveBtn.textContent = 'SAVED';
       } catch (err) {

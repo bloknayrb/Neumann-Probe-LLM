@@ -7,6 +7,7 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "pnpm run build && electron .",
     "dist:linux": "pnpm run build && electron-builder --linux --config electron-builder.config.js",
     "dist:win": "node dist-win.mjs",

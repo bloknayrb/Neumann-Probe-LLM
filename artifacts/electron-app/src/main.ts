@@ -4,10 +4,16 @@ import fs from 'fs';
 import { pathToFileURL } from 'url';
 import { EventEmitter } from 'events';
 
+/**
+ * Upstream also stored an AI provider base URL + key here, because its brain was
+ * an OpenAI-compatible tool loop. This fork's brain is the local Claude Code CLI
+ * running on the operator's own subscription, so there is no AI key to collect —
+ * `claude` just has to be installed and logged in.
+ */
 interface AppConfig {
   vngApiKey: string;
-  aiBaseUrl: string;
-  aiApiKey: string;
+  /** Optional explicit path to the Claude Code CLI, when it isn't on PATH. */
+  claudeBin?: string;
 }
 
 const CONFIG_FILE = path.join(app.getPath('userData'), 'probe-commander-config.json');
@@ -34,7 +40,8 @@ function writeConfig(cfg: AppConfig): void {
 }
 
 function isComplete(cfg: Partial<AppConfig>): cfg is AppConfig {
-  return !!(cfg.vngApiKey && cfg.aiBaseUrl && cfg.aiApiKey);
+  // claudeBin is optional: the api-server falls back to ~/.local/bin then PATH.
+  return !!cfg.vngApiKey;
 }
 
 // ── IPC handlers (registered once at module level) ────────────────────────────
@@ -69,8 +76,10 @@ async function startApiServer(cfg: AppConfig): Promise<void> {
   process.env['PORT'] = '8080';
   process.env['NODE_ENV'] = 'production';
   process.env['VNG_API_KEY'] = cfg.vngApiKey;
-  process.env['AI_INTEGRATIONS_OPENAI_BASE_URL'] = cfg.aiBaseUrl;
-  process.env['AI_INTEGRATIONS_OPENAI_API_KEY'] = cfg.aiApiKey;
+  // The brain is the local Claude Code CLI, not an OpenAI-compatible endpoint,
+  // so no AI provider vars are set here. A GUI-launched app can inherit a
+  // minimal PATH, so pass an explicit binary path through when configured.
+  if (cfg.claudeBin) process.env['CLAUDE_BIN'] = cfg.claudeBin;
   // Route data writes (visited-sectors.json etc.) to the writable user-data
   // folder rather than process.cwd() which is unpredictable in a packaged app.
   process.env['DATA_DIR'] = path.join(app.getPath('userData'), 'data');
