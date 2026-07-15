@@ -23,10 +23,9 @@ export const IRREVERSIBLE = new Set<string>([
 ]);
 
 /**
- * Post-tool bookkeeping, extracted verbatim (behaviour-preserving) from the old
- * inline OpenAI loop in index.ts. Persists local tracking state after a
- * successful tool call: detached-container registry, container recovery,
- * and visited-sector snapshots.
+ * Post-tool bookkeeping: persists local tracking state after a successful tool
+ * call — detached-container registry, container recovery, visited-sector
+ * snapshots.
  *
  * Self-contained: it fetches whatever fresh state it needs rather than relying
  * on a caller-provided snapshot, so it works from both the HTTP endpoint and
@@ -42,21 +41,22 @@ export async function afterTool(
   result: unknown,
   probeId: number | null = null,
 ): Promise<void> {
-  const c = client.clientFor(probeId);
-
   if (name === "detach_container") {
     const mannyId = args.manny_id as string;
     const containerId = args.container_id as string;
+    const probeClient = client.clientFor(probeId);
 
     // Resolve display names + current sector from fresh state.
     const [probeResp, manniesResp] = await Promise.all([
-      c.getProbe(),
-      c.getMannies(),
+      probeClient.getProbe(),
+      probeClient.getMannies(),
     ]);
     const probe = probeResp.probe;
     const sector = probe.sector?.relative ?? { x: 0, y: 0, z: 0 };
     const inv = probe.inventory ?? {};
-    const mannyInfo = (manniesResp.mannies ?? []).find((m: any) => m.id === mannyId);
+    const mannyInfo = (manniesResp.mannies ?? []).find(
+      (m: any) => m.id === mannyId,
+    );
     const itemInfo =
       (inv.containers ?? []).find((c: any) => c.id === containerId) ??
       (inv.items ?? []).find((i: any) => i.id === containerId);
@@ -78,7 +78,7 @@ export async function afterTool(
     });
 
     // Refresh sector to find the anchor asteroid this container attached to.
-    c
+    probeClient
       .getSector()
       .then((freshSector) => {
         const freshObj = (freshSector.sector?.objects ?? []).find(

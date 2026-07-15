@@ -1,11 +1,9 @@
 /**
  * Neumann-Probe stdio MCP server.
  *
- * Exposes ONLY the 12 safe (reversible / non-destructive) game tools to the
+ * Exposes ONLY the safe (reversible / non-destructive) game tools to the
  * headless Claude Code brain. The 6 irreversible tools are omitted entirely so
- * the brain physically cannot invoke them. Each tool is derived from the
- * OpenAI-style `TOOLS` definitions and dispatched through `runTool`, which also
- * performs post-tool bookkeeping.
+ * the brain cannot invoke them directly.
  *
  * Reads VNG_API_KEY (and optional VNG_DATA_DIR, VNG_PROBE_ID) from its own
  * process env — the Claude CLI injects these via the --mcp-config file.
@@ -23,6 +21,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { TOOLS } from "../routes/vng/tools.js";
 import { runTool } from "../routes/vng/run-tool.js";
+import { parseProbeId } from "../routes/vng/client.js";
 
 const SAFE_TOOLS = new Set<string>([
   "get_game_state",
@@ -41,19 +40,10 @@ const SAFE_TOOLS = new Set<string>([
 
 const exposed = TOOLS.filter((t) => SAFE_TOOLS.has(t.function.name));
 
-// Resolved once at startup: the CLI spawns a fresh subprocess per order, so this
-// is fixed for the life of the process. Reject a malformed value loudly rather
-// than falling back to the main probe — silently retargeting the operator's
-// primary probe is the worst possible failure here.
-const PROBE_ID: number | null = (() => {
-  const raw = process.env.VNG_PROBE_ID;
-  if (raw == null || raw === "") return null;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(`Invalid VNG_PROBE_ID: ${raw}`);
-  }
-  return n;
-})();
+// Safe to resolve once: the CLI spawns a fresh subprocess per order (see above),
+// so this never has to change mid-process. A malformed value throws here and
+// kills the server rather than defaulting to the main probe.
+const PROBE_ID = parseProbeId(process.env.VNG_PROBE_ID);
 
 const server = new Server(
   { name: "neumann", version: "1.0.0" },
@@ -90,7 +80,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   } catch (err: any) {
     return {
       isError: true,
-      content: [{ type: "text", text: JSON.stringify({ error: err?.message ?? String(err) }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ error: err?.message ?? String(err) }),
+        },
+      ],
     };
   }
 });

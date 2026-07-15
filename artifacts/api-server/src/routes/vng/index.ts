@@ -43,7 +43,8 @@ const ALLOWED_MCP_TOOLS = [
   .join(" ");
 
 function resolveClaudeBin(): { bin: string; shell: boolean } {
-  if (process.env.CLAUDE_BIN) return { bin: process.env.CLAUDE_BIN, shell: false };
+  if (process.env.CLAUDE_BIN)
+    return { bin: process.env.CLAUDE_BIN, shell: false };
   const guess = path.join(
     os.homedir(),
     ".local",
@@ -63,18 +64,25 @@ function sse(res: import("express").Response, event: Record<string, unknown>) {
 function extractCoreState(probeResp: any, manniesResp: any, sectorResp: any) {
   const probe = probeResp.probe;
   const inv = probe.inventory ?? {};
-  const sector: { x: number; y: number; z: number } =
-    probe.sector?.relative ??
-    sectorResp?.sector?.relativeCoordinates ??
-    { x: 0, y: 0, z: 0 };
+  const sector: { x: number; y: number; z: number } = probe.sector?.relative ??
+    sectorResp?.sector?.relativeCoordinates ?? { x: 0, y: 0, z: 0 };
   const sectorObjects: any[] = sectorResp?.sector?.objects ?? [];
   const mannies: any[] = manniesResp.mannies ?? [];
   const inventoryItems: any[] = inv.items ?? [];
   const activeMannyIds = new Set(mannies.map((m: any) => m.id));
   const stowedMannies = inventoryItems.filter(
-    (i: any) => i.type === "manny" && !activeMannyIds.has(i.id)
+    (i: any) => i.type === "manny" && !activeMannyIds.has(i.id),
   );
-  return { probe, inv, sector, sectorObjects, mannies, inventoryItems, activeMannyIds, stowedMannies };
+  return {
+    probe,
+    inv,
+    sector,
+    sectorObjects,
+    mannies,
+    inventoryItems,
+    activeMannyIds,
+    stowedMannies,
+  };
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -109,16 +117,31 @@ router.get("/probes", async (_req, res) => {
 });
 
 router.get("/state", async (req, res) => {
-  const probeId = req.query.probeId ? Number(req.query.probeId) : null;
+  let probeId: number | null;
   try {
+    probeId = client.parseProbeId(req.query.probeId);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+
+  try {
+    const c = client.clientFor(probeId);
     const [probeResp, manniesResp, sectorResp] = await Promise.all([
-      probeId ? client.getProbeById(probeId) : client.getProbe(),
-      probeId ? client.getManniesById(probeId) : client.getMannies(),
-      (probeId ? client.getSectorById(probeId) : client.getSector()).catch(() => null),
+      c.getProbe(),
+      c.getMannies(),
+      c.getSector().catch(() => null),
     ]);
 
-    const { probe, inv, sector, sectorObjects, mannies, activeMannyIds, stowedMannies } =
-      extractCoreState(probeResp, manniesResp, sectorResp);
+    const {
+      probe,
+      inv,
+      sector,
+      sectorObjects,
+      mannies,
+      activeMannyIds,
+      stowedMannies,
+    } = extractCoreState(probeResp, manniesResp, sectorResp);
 
     // getSector() yields null ONLY when it threw — transit or a real fetch
     // error — which is distinct from a successful-but-empty sector. Surface it
@@ -131,12 +154,15 @@ router.get("/state", async (req, res) => {
     // detail for this sector (visited-sectors store, read by the MAP/SECTORS
     // tabs) with an empty list.
     if (!sectorUnavailable)
-      recordSector(sector.x, sector.y, sector.z, sectorObjects, probeId).catch((e) =>
-        console.error("[recordSector /state]", e),
+      recordSector(sector.x, sector.y, sector.z, sectorObjects, probeId).catch(
+        (e) => console.error("[recordSector /state]", e),
       );
 
     const manniesNorm = mannies.map((m: any) => {
-      const task = m.task && typeof m.task === "object" && !Array.isArray(m.task) ? m.task : null;
+      const task =
+        m.task && typeof m.task === "object" && !Array.isArray(m.task)
+          ? m.task
+          : null;
       return {
         id: m.id,
         name: m.name,
@@ -160,7 +186,10 @@ router.get("/state", async (req, res) => {
 
     const stowedNorm = ((probeResp.probe?.inventory?.items ?? []) as any[])
       .filter((i: any) => i.type === "manny" && !activeMannyIds.has(i.id))
-      .map((i: any) => ({ itemId: i.id, name: i.label ?? i.name ?? "Unnamed Manny" }));
+      .map((i: any) => ({
+        itemId: i.id,
+        name: i.label ?? i.name ?? "Unnamed Manny",
+      }));
 
     // Enriched superset of the old flattened shape (adds bodies/habitability/
     // per-type detail + dangerLevel) so the SYSTEM map has what it needs while
@@ -233,7 +262,7 @@ router.post("/tool", async (req, res) => {
 const CLAUDE_MODEL = process.env.CLAUDE_BRAIN_MODEL || "sonnet";
 
 function buildPrompt(command: string, probeId: number | null): string {
-  return `You are GUPPI, the onboard AI assistant of a Von Neumann Probe. You carry out the operator's orders by calling the provided game tools (exposed via the "neumann" MCP server).
+  const rules = `You are GUPPI, the onboard AI assistant of a Von Neumann Probe. You carry out the operator's orders by calling the provided game tools (exposed via the "neumann" MCP server).
 
 OPERATING RULES:
 - ALWAYS call get_game_state FIRST to load the current probe status, mannies (with their exact string IDs), sector objects, inventory, and crafting recipes. Never invent IDs — only use IDs returned by the tools.
@@ -242,17 +271,17 @@ OPERATING RULES:
 - For "when X finishes, do Y" style orders, use schedule_action and report the scheduled action ID.
 - MINING A SOLAR SYSTEM: when the sector shows a solar_system object and you need to mine, you MUST call scan_sector for the current sector (x, y, z) first. The scan returns a bookmarkTargets array inside the solar_system object — those are the individual body IDs you can mine. The solar_system wrapper itself cannot be mined. Pick by category: "frozen"/"ocean" for ice and organics, "rocky"/"dwarf" for metals, any for deuterium. Then mine the chosen body ID. Do this automatically without asking.
 - You have access ONLY to safe, reversible tools. Destructive actions (moving the probe, jettisoning, detaching/dropping containers, salvage, recall) are intentionally unavailable — if the operator asks for one, explain it must be confirmed through the operator console.
-- Be concise and precise. End with a short summary of what you did or found.
-${
-  probeId != null
-    ? `
-TARGET PROBE:
-Your tools are scoped to probe #${probeId} — the one the operator selected, NOT their main probe. Every tool call already addresses it; do not pass a probe ID yourself, and report results as being about probe #${probeId}.
-`
-    : ""
-}
-OPERATOR ORDER:
-${command}`;
+- Be concise and precise. End with a short summary of what you did or found.`;
+
+  const targetProbe =
+    probeId != null
+      ? `TARGET PROBE:
+Your tools are scoped to probe #${probeId} — the one the operator selected, NOT their main probe. Every tool call already addresses it; do not pass a probe ID yourself, and report results as being about probe #${probeId}.`
+      : null;
+
+  return [rules, targetProbe, `OPERATOR ORDER:\n${command}`]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**
@@ -280,17 +309,13 @@ router.post("/command", async (req, res) => {
     return;
   }
 
-  // The operator's probe picklist sends probeId with every order. Reject junk
-  // rather than coercing: Number("abc") is NaN, which would silently address
-  // /api/probe/NaN. null means "the operator's main probe".
-  let probeId: number | null = null;
-  if (rawProbeId != null) {
-    const n = Number(rawProbeId);
-    if (!Number.isInteger(n) || n <= 0) {
-      res.status(400).json({ error: `invalid probeId: ${rawProbeId}` });
-      return;
-    }
-    probeId = n;
+  // The operator's probe picklist sends probeId with every order.
+  let probeId: number | null;
+  try {
+    probeId = client.parseProbeId(rawProbeId);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+    return;
   }
 
   res.setHeader("Content-Type", "text/event-stream");
@@ -327,10 +352,8 @@ router.post("/command", async (req, res) => {
           env: {
             VNG_API_KEY: apiKey,
             VNG_DATA_DIR: DATA_DIR,
-            // Scope every tool the brain calls to the probe the operator picked.
-            // Omitted (not "null") for the main probe so the MCP server can tell
-            // "unset" from a value. The config is written per-request, so this
-            // cannot leak across concurrent orders on different probes.
+            // Omitted rather than set to "null" for the main probe, so the MCP
+            // server can distinguish unset from a value.
             ...(probeId != null ? { VNG_PROBE_ID: String(probeId) } : {}),
           },
         },
@@ -430,7 +453,9 @@ router.post("/command", async (req, res) => {
             let data: unknown = block.content;
             // MCP tool results arrive as [{type:"text", text:"<json>"}].
             if (Array.isArray(block.content)) {
-              const textPart = block.content.find((c: any) => c.type === "text");
+              const textPart = block.content.find(
+                (c: any) => c.type === "text",
+              );
               if (textPart?.text) {
                 try {
                   data = JSON.parse(textPart.text);
@@ -448,7 +473,13 @@ router.post("/command", async (req, res) => {
                 error: typeof data === "string" ? data : JSON.stringify(data),
               });
             } else {
-              sse(res, { type: "result", tool: toolName, id, success: true, data });
+              sse(res, {
+                type: "result",
+                tool: toolName,
+                id,
+                success: true,
+                data,
+              });
             }
           }
         }
@@ -468,7 +499,10 @@ router.post("/command", async (req, res) => {
 
     child.on("error", (err) => {
       clearTimeout(timeout);
-      sse(res, { type: "error", message: `Failed to spawn brain: ${err.message}` });
+      sse(res, {
+        type: "error",
+        message: `Failed to spawn brain: ${err.message}`,
+      });
       finish(child);
     });
 

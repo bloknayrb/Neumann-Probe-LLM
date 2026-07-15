@@ -52,7 +52,7 @@
       text-transform: uppercase;
     }
 
-    input, select {
+    input {
       width: 100%;
       background: #0d1a0d;
       border: 1px solid #166534;
@@ -65,16 +65,12 @@
       transition: border-color 0.15s;
     }
 
-    input:focus, select:focus {
+    input:focus {
       border-color: #22c55e;
     }
 
     input::placeholder {
       color: #166534;
-    }
-
-    select option {
-      background: #0d1a0d;
     }
 
     .hint {
@@ -192,11 +188,11 @@
   </form>
 
   <script>
-    const vngKeyInput   = document.getElementById('vng-key');
+    const vngKeyInput    = document.getElementById('vng-key');
     const claudeBinInput = document.getElementById('claude-bin');
-    const saveBtn       = document.getElementById('save-btn');
-    const errorMsg      = document.getElementById('error-msg');
-    const savedBanner   = document.getElementById('saved-banner');
+    const saveBtn        = document.getElementById('save-btn');
+    const errorMsg       = document.getElementById('error-msg');
+    const savedBanner    = document.getElementById('saved-banner');
 
     // Pre-fill from existing config. Configs written before this fork replaced
     // the OpenAI brain may still carry aiBaseUrl/aiApiKey; they're ignored and
