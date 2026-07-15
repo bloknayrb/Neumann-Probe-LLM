@@ -1,204 +1,302 @@
-# Home PC Setup Guide
+# Home PC Setup Guide (Windows)
 
-Step-by-step instructions for cloning and running Probe Commander on your own machine.
+Step-by-step instructions for running Probe Commander on your Windows PC. No coding experience required — just follow each step in order.
 
 ---
 
-## Prerequisites
+## Before you start — install the tools
 
-| Tool | Minimum version | How to get it |
-|------|----------------|---------------|
-| **Node.js** | v20 | https://nodejs.org (LTS) |
-| **pnpm** | v10 | `npm install -g pnpm` |
+You need three free programs installed before anything else. If you already have them, skip ahead.
+
+| Program | Minimum version | Download |
+|---------|----------------|----------|
+| **Node.js** | v20 | https://nodejs.org — click the **LTS** button |
+| **pnpm** | v10 | Installed via terminal after Node.js (see below) |
 | **Git** | any | https://git-scm.com |
 
-Verify before continuing:
+**How to open a terminal (Command Prompt):**
+Press `Win + R`, type `cmd`, press Enter — or search for "Command Prompt" in the Start menu. All commands in this guide are typed here.
 
-```bash
-node --version   # should print v20.x or higher
-pnpm --version   # should print 10.x
+**After installing Node.js,** open Command Prompt and run:
+
 ```
+npm install -g pnpm
+```
+
+Then confirm everything is ready:
+
+```
+node --version
+pnpm --version
+```
+
+You should see `v20.x` or higher for Node, and `10.x` for pnpm. If you do, you're good to go.
 
 ---
 
-## Step 1 — Clone the repo
+## Step 1 — Download the code
 
-```bash
+In Command Prompt, run:
+
+```
 git clone <your-repo-url>
 cd <repo-folder>
 ```
+
+Replace `<your-repo-url>` with the actual URL of the repository, and `<repo-folder>` with the name of the folder it creates (Git will print the name after cloning).
 
 ---
 
 ## Step 2 — Install dependencies
 
-```bash
+From inside the repo folder, run:
+
+```
 pnpm install
 ```
 
-This installs packages for every workspace in the monorepo at once.
+This downloads all the code libraries the app needs. It may take a minute or two. When it finishes, you're ready to move on.
 
 ---
 
 ## Step 3 — Get your accounts and credentials
 
-This app has two hard requirements. **Both are mandatory** — the app will show an API error in every panel without them.
+The app needs two things to work. **Both are required** — without them, every panel will show an error.
 
-### 3a. Von Neumann Game account + API key (required)
+### 3a. Von Neumann Game account + API key
 
-You must have an active account on **neumann-probe.net** with your own probe. This app talks directly to the game API using your personal API key — it cannot run without one.
+You need an account on **neumann-probe.net** with your own probe. The app talks directly to the game using your personal API key.
 
 1. Register or log in at https://neumann-probe.net
-2. Find your API key in your account/profile settings
-3. Copy it — you'll paste it into the `.env` file in Step 4
+2. Find your API key in your account or profile settings
+3. Copy it — you'll paste it into a file in Step 4
 
-> **This key is personal to your probe.** It controls your probe and your game data. Do not share it.
+> **Keep this key private.** It controls your probe and your game data.
 
-### 3b. An OpenAI-compatible AI endpoint (required for natural language commands)
+### 3b. An AI service (for natural language commands)
 
-The command panel sends your text to an AI that translates it into game actions. Pick **one**:
+When you type a command like "have Socrates mine carbon into the container", the app sends it to an AI that figures out what to do. You need to pick one AI service:
 
-| Option | BASE_URL | API_KEY |
-|--------|----------|---------|
-| **OpenAI** | `https://api.openai.com/v1` | Your key from platform.openai.com |
-| **Groq** (free tier, fast) | `https://api.groq.com/openai/v1` | Your key from console.groq.com |
-| **Local Ollama** | `http://localhost:11434/v1` | Any non-empty string (e.g. `ollama`) |
+| Service | Cost | Sign up |
+|---------|------|---------|
+| **OpenAI** | Paid (pay-as-you-go) | https://platform.openai.com |
+| **Groq** | Free tier, fast | https://console.groq.com |
+| **Ollama** | Free, runs on your PC | https://ollama.com |
 
-Groq is recommended for free usage — it has a generous daily limit and is very fast.
+**Groq is recommended** if you want something free and quick to set up.
 
-> **Ollama note:** If you choose Ollama, install it from https://ollama.com, pull a model (`ollama pull llama3.1`), and make sure it is running (`ollama serve`) before starting the api-server. You will also need to change the model name in Step 6.
+Once signed up, you'll need two things from your chosen service: a **Base URL** and an **API key**. Use these values:
+
+| Service | Base URL | API key |
+|---------|----------|---------|
+| OpenAI | `https://api.openai.com/v1` | From platform.openai.com → API keys |
+| Groq | `https://api.groq.com/openai/v1` | From console.groq.com → API keys |
+| Ollama | `http://localhost:11434/v1` | Type any word (e.g. `ollama`) |
+
+> **Ollama extra step:** After installing from https://ollama.com, open a new Command Prompt and run `ollama pull llama3.1` to download the AI model, then `ollama serve` to start it. Keep that window open.
 
 ---
 
-## Step 4 — Create environment files
+## Step 4 — Create the configuration files
 
-### `artifacts/api-server/.env`
+The app reads settings from two plain text files called `.env`. You'll create each one in a specific folder.
+
+> **What is a `.env` file?** It's a plain text file named exactly `.env` (dot at the start, no other extension). Open Notepad, type the contents, then choose **File → Save As**, navigate to the correct folder, set **Save as type** to **All Files**, and type `.env` as the filename.
+
+### File 1: `artifacts\api-server\.env`
+
+Navigate to the `artifacts\api-server\` folder inside the repo and create a file named `.env` containing:
 
 ```
 PORT=8080
-VNG_API_KEY=<your neumann-probe.net API key>
-AI_INTEGRATIONS_OPENAI_BASE_URL=<base URL from step 3b>
-AI_INTEGRATIONS_OPENAI_API_KEY=<API key from step 3b>
+VNG_API_KEY=paste-your-neumann-probe-api-key-here
+AI_INTEGRATIONS_OPENAI_BASE_URL=paste-the-base-url-from-step-3b-here
+AI_INTEGRATIONS_OPENAI_API_KEY=paste-the-api-key-from-step-3b-here
 ```
 
-### `artifacts/probe-commander/.env`
+Replace each placeholder with your actual values from Step 3.
+
+### File 2: `artifacts\probe-commander\.env`
+
+Navigate to the `artifacts\probe-commander\` folder and create a file named `.env` containing:
 
 ```
 PORT=5173
-BASE_PATH=/
 ```
 
-> Port 5173 is the Vite default. You can use any free port.
+You don't need to change anything here — copy it exactly as shown.
 
 ---
 
-## Step 5 — Clear the sector history
+## Step 5 — Clear the sector history (first-time setup only)
 
-The repo contains the original author's sector visit history. Before your first run, replace it with an empty log so the globe and map start fresh for your probe:
+The repo includes the original author's explored-sector data. Run this command once to reset it so the map starts fresh for your probe.
 
-```bash
-echo '{"sectors":[]}' > artifacts/api-server/data/visited-sectors.json
+**In PowerShell** (search "PowerShell" in the Start menu, open it, navigate to the repo folder with `cd <path-to-repo>`):
+
+```
+Set-Content artifacts\api-server\data\visited-sectors.json '{"sectors":[]}'
 ```
 
-If that file doesn't exist yet, you can skip this step — the server creates it automatically on first run.
+**Or in Command Prompt:**
+
+```
+echo {"sectors":[]}> artifacts\api-server\data\visited-sectors.json
+```
+
+> If you get an error saying the file or folder doesn't exist, skip this step — the app will create the file on its own when it first starts.
+
+> **Using the desktop app instead?** The Electron version stores its data in `%APPDATA%\Probe Commander\data\`. To reset sector history there, run in PowerShell:
+> ```
+> Set-Content "$env:APPDATA\Probe Commander\data\visited-sectors.json" '{"sectors":[]}'
+> ```
 
 ---
 
-## Step 6 — Add a local API proxy to Vite
+## Step 6 — Add a local network connection between the two parts of the app
 
-On Replit, a built-in proxy routes `/api/*` from the frontend to the api-server. Locally you need to tell Vite to do the same. Open `artifacts/probe-commander/vite.config.ts` and add a `proxy` block inside the `server` section:
+The app has two parts: a **backend** (the API server) and a **frontend** (the web interface). On Replit these are wired together automatically; locally you need to do it yourself by editing one file.
+
+Open `artifacts\probe-commander\vite.config.ts` in a text editor (right-click → Open with → Notepad, or use VS Code if you have it) and find this section near the bottom:
 
 ```ts
-server: {
-  port,
-  strictPort: true,
-  host: "0.0.0.0",
-  allowedHosts: true,
-  fs: {
-    strict: true,
-  },
-  // Add this block for local development:
-  proxy: {
-    "/api": {
-      target: "http://localhost:8080",
-      changeOrigin: true,
-    },
-  },
-},
+  server: {
+    port,
+    strictPort: true,
+    host: "0.0.0.0",
+    allowedHosts: true,
 ```
 
-This makes requests to `http://localhost:5173/api/...` forward to `http://localhost:8080/api/...`, exactly like the Replit proxy does in production.
+Add the following four lines **inside** that `server: {` block, just after the line that says `allowedHosts: true,`:
 
-> **Important:** Do not commit this change if you want to keep the repo Replit-compatible. You can stash it (`git stash`) or keep it on a local branch.
+```ts
+    proxy: {
+      "/api": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+    },
+```
+
+Save the file. This tells the frontend to forward any `/api/...` requests to the backend running on port 8080.
+
+> **Don't commit this change** if you want to keep the repo working on Replit. You can undo it before pushing (`git stash`) or keep it on a local-only branch.
 
 ---
 
-## Step 7 — (Ollama only) Change the model name
+## Step 7 — (Ollama only) Switch the AI model name
 
-If you are using a local Ollama model, open `artifacts/api-server/src/routes/vng/index.ts` and find this line:
+If you chose Ollama in Step 3b, open `artifacts\api-server\src\routes\vng\index.ts` in a text editor and find this line:
 
 ```ts
 model: "gpt-5.4",
 ```
 
-Change it to the Ollama model you pulled, for example:
+Change it to the model you pulled, for example:
 
 ```ts
 model: "llama3.1",
 ```
 
+Skip this step entirely if you're using OpenAI or Groq.
+
 ---
 
-## Step 8 — Start both servers
+## Step 8 — Start the app
 
-Open **two terminal windows** in the repo root.
+You need **two Command Prompt windows** open at the same time. In each one, navigate to the repo folder first:
 
-**Terminal 1 — API server:**
+```
+cd C:\Users\YourName\Documents\GitHub\<repo-folder>
+```
 
-```bash
+**Window 1 — start the backend:**
+
+```
 pnpm --filter @workspace/api-server run dev
 ```
 
-You should see: `Server listening  {"port":8080}`
+Wait until you see a line like:
+```
+Server listening  {"port":8080}
+```
 
-**Terminal 2 — Frontend:**
+**Window 2 — start the frontend:**
 
-```bash
+```
 pnpm --filter @workspace/probe-commander run dev
 ```
 
-You should see: `VITE ready in ... ms  ➜  Local: http://localhost:5173/`
+Wait until you see:
+```
+VITE ready in ... ms  ➜  Local: http://localhost:5173/
+```
 
 ---
 
 ## Step 9 — Open the app
 
-Navigate to **http://localhost:5173** in your browser.
+Go to **http://localhost:5173** in your browser (Chrome, Edge, Firefox — any will work).
 
 If everything is working, the PROBE tab will show your probe's name, sector, fuel, and hull integrity within a few seconds.
 
 ---
 
-## Troubleshooting
+## Alternative — Desktop app (no browser, no terminal after setup)
 
-| Symptom | Likely cause | Fix |
-|---------|-------------|-----|
-| `API ERROR` shown in every panel | Wrong or missing `VNG_API_KEY` | Confirm your key in `artifacts/api-server/.env` and that you have a neumann-probe.net account |
-| `PORT environment variable is required` | Missing `.env` file | Create the `.env` files from Step 4 |
-| AI commands return errors | Wrong base URL or model name | Double-check Steps 3b and 7 |
-| Globe shows a blank canvas | Frontend can't reach `/api/*` | Confirm the Vite proxy in Step 6 is saved and the dev server was restarted |
-| Panels say loading forever | API server not running | Start Terminal 1 first, check its output for errors |
-| Ollama errors mentioning the model | Model not pulled | Run `ollama pull <model-name>` |
-| Map shows someone else's probe path | Old sector history in the repo | Run the command in Step 5 to reset it |
+The repo includes an Electron wrapper (`artifacts\electron-app\`) that packages everything into a double-clickable `.exe`. On first launch it shows a setup screen where you enter your credentials — no `.env` files or Command Prompt required after that.
+
+### Build it
+
+After completing Steps 1–2 (clone the repo, install dependencies), run this **single command** from the repo folder:
+
+```
+pnpm --filter @workspace/electron-app run dist:win
+```
+
+It will automatically:
+1. Build the backend
+2. Build the frontend
+3. Compile the Electron wrapper
+4. Package everything and create a zip file
+
+The zip (`Probe-Commander-win.zip`) is created inside `artifacts\electron-app\release\`. Extract it anywhere, open the `Probe Commander-win32-x64` folder, and double-click **Probe Commander.exe** to launch.
+
+> **First run only:** The first build downloads the Electron binary (~90 MB) and caches it. Subsequent builds skip the download and finish much faster.
+
+### What happens on first launch
+
+A setup screen appears asking for:
+- Your **neumann-probe.net API key**
+- Your **AI provider** (OpenAI, Groq, or Ollama) and its key
+
+These are saved privately on your computer. The app remembers them from then on. You can re-open the setup screen anytime via the **Probe Commander → Credentials & Settings…** menu.
+
+> **Note:** The desktop app and the browser method are equivalent — use whichever suits you. The `.env` file approach (Steps 1–9 above) is simpler for development; the desktop `.exe` is better for everyday use or sharing with others.
 
 ---
 
-## Quick reference — env variables
+## Troubleshooting
 
-| Variable | Set in | Purpose |
-|----------|--------|---------|
-| `VNG_API_KEY` | `api-server/.env` | Authenticates with neumann-probe.net (**required**) |
-| `AI_INTEGRATIONS_OPENAI_BASE_URL` | `api-server/.env` | Where the AI endpoint lives (**required**) |
-| `AI_INTEGRATIONS_OPENAI_API_KEY` | `api-server/.env` | Key for the AI endpoint (**required**) |
-| `PORT` | both `.env` files | Which port each server binds to |
-| `BASE_PATH` | `probe-commander/.env` | URL base for the Vite build (keep as `/`) |
+| What you see | Most likely cause | What to do |
+|---|---|---|
+| `API ERROR` in every panel | Wrong or missing `VNG_API_KEY` | Double-check the key in `artifacts\api-server\.env` and that you have a neumann-probe.net account |
+| `PORT environment variable is required` | Missing `.env` file | Create the `.env` files from Step 4 |
+| AI commands return errors | Wrong Base URL or API key | Re-check Step 3b; for Ollama also check Step 7 |
+| Panels load forever | Backend not running | Make sure Window 1 started without errors; look for red text |
+| Map/globe shows no data | Frontend can't reach the backend | Confirm the proxy block from Step 6 is saved and restart Window 2 |
+| Ollama errors about the model | Model not downloaded | Run `ollama pull llama3.1` in a new Command Prompt |
+| Map shows someone else's route | Old sector history in the repo | Run the command from Step 5 |
+| `'pnpm' is not recognized` | pnpm not installed | Re-run `npm install -g pnpm` and open a fresh Command Prompt |
+
+---
+
+## Quick reference — what each setting does
+
+| Setting | File | What it's for |
+|---------|------|---------------|
+| `VNG_API_KEY` | `api-server\.env` | Connects to neumann-probe.net (**required**) |
+| `AI_INTEGRATIONS_OPENAI_BASE_URL` | `api-server\.env` | Where to send AI commands (**required**) |
+| `AI_INTEGRATIONS_OPENAI_API_KEY` | `api-server\.env` | Authenticates with your AI service (**required**) |
+| `PORT` | both `.env` files | Which port each server runs on |
+| `BASE_PATH` | auto-detected | Defaults to `/`; set by Replit automatically when hosted there |

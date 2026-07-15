@@ -1,11 +1,19 @@
 import { promises as fs } from "fs";
 import path from "path";
 
-// VNG_DATA_DIR lets the stdio MCP subprocess (spawned by the Claude CLI with a
-// different cwd) share the same bookkeeping data dir as the main api-server.
-const DATA_DIR = process.env.VNG_DATA_DIR
+// Two independent overrides, checked most-specific first:
+//   VNG_DATA_DIR — set by /command on the stdio MCP subprocess, which the Claude
+//     CLI spawns with a different cwd; without it the subprocess would keep its
+//     own separate bookkeeping.
+//   DATA_DIR — set by the Electron app, whose packaged cwd is unpredictable, to
+//     point at the writable user-data folder.
+// VNG_DATA_DIR wins so that a subprocess spawned under Electron still shares the
+// parent's dir rather than re-deriving it.
+export const DATA_DIR = process.env.VNG_DATA_DIR
   ? path.resolve(process.env.VNG_DATA_DIR)
-  : path.resolve(process.cwd(), "data");
+  : process.env["DATA_DIR"]
+    ? path.resolve(process.env["DATA_DIR"])
+    : path.resolve(process.cwd(), "data");
 
 async function ensureDir() {
   await fs.mkdir(DATA_DIR, { recursive: true });
@@ -124,6 +132,26 @@ export async function cancelPendingAction(id: number): Promise<boolean> {
   return true;
 }
 
+export type ProbeVisit = {
+  firstVisitedAt: string;
+  lastVisitedAt: string;
+  visitCount: number;
+};
+
+/**
+ * One record per sector, mixing two different kinds of fact:
+ *
+ *  - `objects` / `resourceSummary` describe the SECTOR. They're observer-
+ *    independent — any probe scanning these coordinates sees the same things —
+ *    so they stay global and every probe's scan refreshes them.
+ *  - the visit counters describe a (probe, sector) PAIR. The top-level ones are
+ *    the operator's main probe; other probes get their own entry in
+ *    `probeVisits`, so commanding a secondary probe can't inflate the main
+ *    probe's exploration history.
+ *
+ * `probeVisits` is optional, so records written before it existed stay valid and
+ * read back as "main probe only" — no migration needed.
+ */
 export type VisitedSector = {
   id: number;
   sectorX: number;
@@ -134,6 +162,7 @@ export type VisitedSector = {
   visitCount: number;
   objects: object[];
   resourceSummary: string[];
+  probeVisits?: Record<string, ProbeVisit>;
 };
 
 const CONTAINERS_FILE = "detached-containers.json";
@@ -227,11 +256,17 @@ export async function getSectors(): Promise<VisitedSector[]> {
   return readFile<VisitedSector[]>(SECTORS_FILE, []);
 }
 
+/**
+ * @param probeId Which probe made the observation. null = the operator's main
+ *   probe (the common case). A non-null ID records the visit under that probe
+ *   instead, leaving the main probe's counters untouched.
+ */
 export async function recordSector(
   x: number,
   y: number,
   z: number,
-  objects: object[]
+  objects: object[],
+  probeId: number | null = null
 ): Promise<void> {
   const resourceSummary: string[] = Array.from(
     new Set((objects as any[]).flatMap((o) => o.resourceTypes ?? []))
@@ -330,11 +365,24 @@ export async function recordSector(
   );
 
   const now = new Date().toISOString();
+  const bumpProbe = (existing?: ProbeVisit): ProbeVisit => ({
+    firstVisitedAt: existing?.firstVisitedAt ?? now,
+    lastVisitedAt: now,
+    visitCount: (existing?.visitCount ?? 0) + 1,
+  });
+
   if (idx !== -1) {
-    rows[idx].lastVisitedAt = now;
-    rows[idx].visitCount += 1;
-    rows[idx].objects = simplified;
-    rows[idx].resourceSummary = resourceSummary;
+    const row = rows[idx];
+    // Sector contents refresh regardless of observer — see VisitedSector.
+    row.objects = simplified;
+    row.resourceSummary = resourceSummary;
+    if (probeId == null) {
+      row.lastVisitedAt = now;
+      row.visitCount += 1;
+    } else {
+      row.probeVisits ??= {};
+      row.probeVisits[String(probeId)] = bumpProbe(row.probeVisits[String(probeId)]);
+    }
   } else {
     rows.push({
       id: rows.length > 0 ? Math.max(...rows.map((r) => r.id)) + 1 : 1,
@@ -343,9 +391,15 @@ export async function recordSector(
       sectorZ: z,
       firstVisitedAt: now,
       lastVisitedAt: now,
-      visitCount: 1,
+      // A sector first seen by a secondary probe is one the main probe has
+      // never visited: record the contents, but leave its count at 0 rather
+      // than crediting the main probe with someone else's exploration.
+      visitCount: probeId == null ? 1 : 0,
       objects: simplified,
       resourceSummary,
+      ...(probeId != null
+        ? { probeVisits: { [String(probeId)]: bumpProbe() } }
+        : {}),
     });
   }
   await writeFile(SECTORS_FILE, rows);

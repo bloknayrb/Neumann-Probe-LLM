@@ -7,8 +7,13 @@
  * OpenAI-style `TOOLS` definitions and dispatched through `runTool`, which also
  * performs post-tool bookkeeping.
  *
- * Reads VNG_API_KEY (and optional VNG_DATA_DIR) from its own process env — the
- * Claude CLI injects these via the --mcp-config file.
+ * Reads VNG_API_KEY (and optional VNG_DATA_DIR, VNG_PROBE_ID) from its own
+ * process env — the Claude CLI injects these via the --mcp-config file.
+ *
+ * VNG_PROBE_ID scopes every tool call to the probe the operator selected in the
+ * UI. It arrives via env rather than a tool argument on purpose: the brain
+ * cannot see or override it, so it cannot address a probe the operator didn't
+ * pick. Unset means the operator's main probe.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -35,6 +40,20 @@ const SAFE_TOOLS = new Set<string>([
 ]);
 
 const exposed = TOOLS.filter((t) => SAFE_TOOLS.has(t.function.name));
+
+// Resolved once at startup: the CLI spawns a fresh subprocess per order, so this
+// is fixed for the life of the process. Reject a malformed value loudly rather
+// than falling back to the main probe — silently retargeting the operator's
+// primary probe is the worst possible failure here.
+const PROBE_ID: number | null = (() => {
+  const raw = process.env.VNG_PROBE_ID;
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`Invalid VNG_PROBE_ID: ${raw}`);
+  }
+  return n;
+})();
 
 const server = new Server(
   { name: "neumann", version: "1.0.0" },
@@ -64,7 +83,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   try {
-    const result = await runTool(name, args);
+    const result = await runTool(name, args, { probeId: PROBE_ID });
     return {
       content: [{ type: "text", text: JSON.stringify(result) }],
     };

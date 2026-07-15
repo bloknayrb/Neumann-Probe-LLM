@@ -259,6 +259,7 @@ function ContainersPanel({ refetchSignal }: { refetchSignal: number }) {
   const [showOnboard, setShowOnboard] = useState(true);
   const [showFloating, setShowFloating] = useState(true);
 
+  const probeStorage = data?.probeStorage ?? null;
   const onboard: any[] = data?.onboard ?? [];
   const floating: any[] = data?.floating ?? [];
 
@@ -298,6 +299,24 @@ function ContainersPanel({ refetchSignal }: { refetchSignal: number }) {
 
   return (
     <div className="space-y-4">
+
+      {/* Probe hull storage */}
+      {probeStorage && (
+        <div className="border border-primary/40 rounded p-2.5 text-xs space-y-1.5">
+          <div className="font-bold text-primary tracking-wider">PROBE STORAGE</div>
+          <CapacityBar used={probeStorage.usedCapacity} total={probeStorage.capacity} />
+          <ContentsList contents={probeStorage.contents} />
+          {probeStorage.items?.length > 0 && (
+            <div className="space-y-0.5">
+              {probeStorage.items.map((item: any, i: number) => (
+                <div key={i} className="text-[10px] text-foreground/80">
+                  {item.name.replace(/_/g, " ")}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* On-board containers */}
       <div className="space-y-2">
@@ -734,7 +753,7 @@ export default function Commander() {
       const res = await fetch(`${BASE}/api/vng/command`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: cmd }),
+        body: JSON.stringify({ command: cmd, probeId: selectedProbeId }),
       });
       if (!res.ok || !res.body) throw new Error(`Server error: ${res.status}`);
       const reader = res.body.getReader();
@@ -766,7 +785,7 @@ export default function Commander() {
     setLiveEvents([]);
     setIsRunning(false);
     setLogRefetch(n => n + 1);
-  }, [input, isRunning]);
+  }, [input, isRunning, selectedProbeId]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendCommand(); }

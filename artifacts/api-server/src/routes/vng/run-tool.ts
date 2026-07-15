@@ -31,20 +31,27 @@ export const IRREVERSIBLE = new Set<string>([
  * Self-contained: it fetches whatever fresh state it needs rather than relying
  * on a caller-provided snapshot, so it works from both the HTTP endpoint and
  * the MCP subprocess.
+ *
+ * @param probeId Must match the probe the tool actually ran against. Bookkeeping
+ *   reads fresh state to resolve names and coordinates, so a mismatch here files
+ *   one probe's containers and sectors under another's.
  */
 export async function afterTool(
   name: string,
   args: Record<string, unknown>,
   result: unknown,
+  probeId: number | null = null,
 ): Promise<void> {
+  const c = client.clientFor(probeId);
+
   if (name === "detach_container") {
     const mannyId = args.manny_id as string;
     const containerId = args.container_id as string;
 
     // Resolve display names + current sector from fresh state.
     const [probeResp, manniesResp] = await Promise.all([
-      client.getProbe(),
-      client.getMannies(),
+      c.getProbe(),
+      c.getMannies(),
     ]);
     const probe = probeResp.probe;
     const sector = probe.sector?.relative ?? { x: 0, y: 0, z: 0 };
@@ -71,7 +78,7 @@ export async function afterTool(
     });
 
     // Refresh sector to find the anchor asteroid this container attached to.
-    client
+    c
       .getSector()
       .then((freshSector) => {
         const freshObj = (freshSector.sector?.objects ?? []).find(
@@ -104,6 +111,7 @@ export async function afterTool(
       args.y as number,
       args.z as number,
       scannedObjects,
+      probeId,
     ).catch(() => {});
     return;
   }
@@ -117,6 +125,7 @@ export async function afterTool(
       gsSector.y,
       gsSector.z,
       gsObjects,
+      probeId,
     ).catch(() => {});
     return;
   }
@@ -130,16 +139,21 @@ export type RunToolResult =
  * Execute a game tool with confirmation-gating for irreversible actions and
  * automatic post-tool bookkeeping. Single choke-point shared by the HTTP
  * `/tool` endpoint and the MCP server.
+ *
+ * `opts.probeId` scopes the call to one of the operator's other probes; omit it
+ * (or pass null) for the main probe. The same value drives both execution and
+ * bookkeeping, so the two can't drift apart.
  */
 export async function runTool(
   name: string,
   args: Record<string, unknown>,
-  opts?: { confirm?: boolean },
+  opts?: { confirm?: boolean; probeId?: number | null },
 ): Promise<RunToolResult> {
   if (IRREVERSIBLE.has(name) && !opts?.confirm) {
     return { requiresConfirmation: true, tool: name };
   }
-  const result = await executeTool(name, args);
-  await afterTool(name, args, result);
+  const probeId = opts?.probeId ?? null;
+  const result = await executeTool(name, args, probeId);
+  await afterTool(name, args, result, probeId);
   return result;
 }

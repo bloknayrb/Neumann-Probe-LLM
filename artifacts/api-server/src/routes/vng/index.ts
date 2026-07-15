@@ -14,6 +14,7 @@ import {
   cancelPendingAction,
   recordSector,
   getPendingActions,
+  DATA_DIR,
 } from "./file-store.js";
 
 const router = Router();
@@ -21,7 +22,6 @@ const router = Router();
 // Resolve paths relative to this bundled module (dist/index.mjs).
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MCP_SERVER_PATH = path.join(HERE, "neumann-mcp.mjs");
-const DATA_DIR = path.join(HERE, "..", "data");
 const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
 
 // The 12 safe tools the headless brain is allowed to call (MCP-prefixed).
@@ -131,7 +131,9 @@ router.get("/state", async (req, res) => {
     // detail for this sector (visited-sectors store, read by the MAP/SECTORS
     // tabs) with an empty list.
     if (!sectorUnavailable)
-      recordSector(sector.x, sector.y, sector.z, sectorObjects).catch((e) => console.error("[recordSector /state]", e));
+      recordSector(sector.x, sector.y, sector.z, sectorObjects, probeId).catch((e) =>
+        console.error("[recordSector /state]", e),
+      );
 
     const manniesNorm = mannies.map((m: any) => {
       const task = m.task && typeof m.task === "object" && !Array.isArray(m.task) ? m.task : null;
@@ -230,7 +232,7 @@ router.post("/tool", async (req, res) => {
 
 const CLAUDE_MODEL = process.env.CLAUDE_BRAIN_MODEL || "sonnet";
 
-function buildPrompt(command: string): string {
+function buildPrompt(command: string, probeId: number | null): string {
   return `You are GUPPI, the onboard AI assistant of a Von Neumann Probe. You carry out the operator's orders by calling the provided game tools (exposed via the "neumann" MCP server).
 
 OPERATING RULES:
@@ -238,9 +240,17 @@ OPERATING RULES:
 - Use exact Manny IDs (long strings like "mny_e84fa37181de693e8e831147").
 - Mining, crafting, and salvage are long-running: once started the Manny is busy for real game time. Tell the operator the task was QUEUED.
 - For "when X finishes, do Y" style orders, use schedule_action and report the scheduled action ID.
+- MINING A SOLAR SYSTEM: when the sector shows a solar_system object and you need to mine, you MUST call scan_sector for the current sector (x, y, z) first. The scan returns a bookmarkTargets array inside the solar_system object — those are the individual body IDs you can mine. The solar_system wrapper itself cannot be mined. Pick by category: "frozen"/"ocean" for ice and organics, "rocky"/"dwarf" for metals, any for deuterium. Then mine the chosen body ID. Do this automatically without asking.
 - You have access ONLY to safe, reversible tools. Destructive actions (moving the probe, jettisoning, detaching/dropping containers, salvage, recall) are intentionally unavailable — if the operator asks for one, explain it must be confirmed through the operator console.
 - Be concise and precise. End with a short summary of what you did or found.
-
+${
+  probeId != null
+    ? `
+TARGET PROBE:
+Your tools are scoped to probe #${probeId} — the one the operator selected, NOT their main probe. Every tool call already addresses it; do not pass a probe ID yourself, and report results as being about probe #${probeId}.
+`
+    : ""
+}
 OPERATOR ORDER:
 ${command}`;
 }
@@ -255,14 +265,32 @@ function stripPrefix(toolName: string): string {
 }
 
 router.post("/command", async (req, res) => {
-  const { command, sessionId: bodySessionId } = req.body as {
+  const {
+    command,
+    sessionId: bodySessionId,
+    probeId: rawProbeId,
+  } = req.body as {
     command: string;
     sessionId?: string;
+    probeId?: number | null;
   };
 
   if (!command?.trim()) {
     res.status(400).json({ error: "command is required" });
     return;
+  }
+
+  // The operator's probe picklist sends probeId with every order. Reject junk
+  // rather than coercing: Number("abc") is NaN, which would silently address
+  // /api/probe/NaN. null means "the operator's main probe".
+  let probeId: number | null = null;
+  if (rawProbeId != null) {
+    const n = Number(rawProbeId);
+    if (!Number.isInteger(n) || n <= 0) {
+      res.status(400).json({ error: `invalid probeId: ${rawProbeId}` });
+      return;
+    }
+    probeId = n;
   }
 
   res.setHeader("Content-Type", "text/event-stream");
@@ -299,6 +327,11 @@ router.post("/command", async (req, res) => {
           env: {
             VNG_API_KEY: apiKey,
             VNG_DATA_DIR: DATA_DIR,
+            // Scope every tool the brain calls to the probe the operator picked.
+            // Omitted (not "null") for the main probe so the MCP server can tell
+            // "unset" from a value. The config is written per-request, so this
+            // cannot leak across concurrent orders on different probes.
+            ...(probeId != null ? { VNG_PROBE_ID: String(probeId) } : {}),
           },
         },
       },
@@ -323,7 +356,7 @@ router.post("/command", async (req, res) => {
     const childEnv = { ...process.env };
     delete childEnv.ANTHROPIC_API_KEY;
 
-    const prompt = buildPrompt(command);
+    const prompt = buildPrompt(command, probeId);
     const args = [
       "-p",
       "--output-format",
