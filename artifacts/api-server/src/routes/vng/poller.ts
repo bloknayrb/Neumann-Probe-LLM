@@ -47,7 +47,10 @@ async function checkCondition(
     return true;
   }
   if (cond.type === "probe_idle") {
-    return probe?.movement?.status !== "moving";
+    // Null-guard: a probe we couldn't load is not "idle". Without this, a null
+    // probe makes `undefined !== "moving"` true and fires the action blind.
+    if (!probe) return false;
+    return probe.movement?.status !== "moving";
   }
   return false;
 }
@@ -114,7 +117,10 @@ export function toToolCall(a: PendingActionPayload): {
  */
 async function executeAction(action: PendingAction): Promise<void> {
   const { name, args } = toToolCall(action.action);
-  const result = await runTool(name, args, { confirm: true });
+  const result = await runTool(name, args, {
+    confirm: true,
+    probeId: action.probeId ?? null,
+  });
 
   // runTool REFUSES by returning, not by throwing. Our caller reads a clean
   // return as success and stamps the row "triggered" — so a refusal that slips
@@ -152,19 +158,62 @@ function actionMannyId(action: PendingAction): string | null {
   return null;
 }
 
-async function poll(): Promise<void> {
-  const pending = await getPendingActions();
-  if (pending.length === 0) return;
+/**
+ * Is a failed probe fetch worth retrying, or is the probe simply gone?
+ *
+ * A network error (fetch rejects: timeout, ECONNRESET, DNS) is transient — skip
+ * the probe's rows this tick and try again next tick. A 4xx from the game API is
+ * the probe answering "no" — most importantly a 404 for a probe that was
+ * decommissioned while a row still targeted it — and will never succeed, so its
+ * rows must fail loudly rather than retry forever. 429 (rate limit) and 5xx are
+ * transient. client.ts formats HTTP errors as "VNG API error (<status>): ...".
+ */
+function isPermanentFetchError(err: unknown): boolean {
+  const status = Number(
+    /VNG API error \((\d+)\)/.exec((err as any)?.message ?? "")?.[1],
+  );
+  return status >= 400 && status < 500 && status !== 429;
+}
 
+/**
+ * Run the due actions for one target probe. State is fetched once for this probe
+ * (its own probe + mannies), and manny/probe-move claims are scoped to this call,
+ * so two probes' actions never contend for one claim set.
+ */
+async function pollProbe(
+  probeId: number | null,
+  actions: PendingAction[],
+): Promise<void> {
+  const c = client.clientFor(probeId);
   let probeResp: any = null;
   let manniesResp: any = null;
   try {
     [probeResp, manniesResp] = await Promise.all([
-      client.getProbe(),
-      client.getMannies(),
+      c.getProbe(),
+      c.getMannies(),
     ]);
-  } catch (err) {
-    logger.warn({ err }, "poller: failed to fetch probe state");
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (isPermanentFetchError(err)) {
+      // The probe can't be reached and won't recover (e.g. it was decommissioned
+      // while these rows still targeted it). Fail the rows into the recent view
+      // instead of silently retrying them forever.
+      logger.error(
+        { probeId, err: msg },
+        "poller: target probe fetch failed permanently — failing its scheduled rows",
+      );
+      for (const action of actions) {
+        await resolvePendingAction(action.id, {
+          status: "failed",
+          error: `target probe ${probeId ?? "main"} unavailable: ${msg}`,
+        });
+      }
+    } else {
+      logger.warn(
+        { probeId, err: msg },
+        "poller: transient probe fetch failure — retrying next tick",
+      );
+    }
     return;
   }
 
@@ -176,7 +225,7 @@ async function poll(): Promise<void> {
   const claimedMannies = new Set<string>();
   let probeMoveClaimed = false;
 
-  for (const action of pending) {
+  for (const action of actions) {
     // Check if the resource this action needs is already claimed this cycle
     const mannyId = actionMannyId(action);
     if (mannyId && claimedMannies.has(mannyId)) {
@@ -232,6 +281,25 @@ async function poll(): Promise<void> {
       await resolvePendingAction(action.id, { status: "failed", error: msg });
     }
   }
+}
+
+async function poll(): Promise<void> {
+  const pending = await getPendingActions();
+  if (pending.length === 0) return;
+
+  // Group by target probe (null = main). A missing probeId means the row predates
+  // multi-probe, so it can only have meant the main probe — coalesce, don't fail.
+  const byProbe = new Map<number | null, PendingAction[]>();
+  for (const action of pending) {
+    const pid = action.probeId ?? null;
+    (byProbe.get(pid) ?? byProbe.set(pid, []).get(pid)!).push(action);
+  }
+
+  // Each probe fetches and fires independently; allSettled so one probe's
+  // failure never aborts the others' due work (Promise.all would reject-fast).
+  await Promise.allSettled(
+    [...byProbe].map(([pid, actions]) => pollProbe(pid, actions)),
+  );
 }
 
 export function startPoller(): void {
