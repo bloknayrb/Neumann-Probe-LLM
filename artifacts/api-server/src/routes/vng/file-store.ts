@@ -169,8 +169,9 @@ const LOCK_WAIT_MS = 15_000; // give up rather than hang a request forever
  * Held only across a read-modify-write (never across a game API call), so the
  * critical section is milliseconds. A process killed mid-write (the MCP
  * subprocess is routinely killed on command completion) can orphan the lock; the
- * staleness check reclaims it. The stale window (>10s) is far longer than any
- * real local-file RMW, so it can't cause two live holders.
+ * staleness check reclaims it atomically (via rename) so two racing reclaimers
+ * can't both take it. The stale window (>10s) is far longer than any real
+ * local-file RMW, so a still-live holder is never seen as stale.
  */
 async function withCrossProcessLock<T>(
   name: string,
@@ -196,10 +197,21 @@ async function withCrossProcessLock<T>(
           err,
         );
       }
-      // Held by someone. Reclaim if the holder died and left it stale.
+      // Held by someone. Reclaim if the holder died and left it stale — but do it
+      // atomically: rename the orphan to a per-pid name so only ONE racer can win.
+      // A blind unlink here lets two processes both "reclaim" the same orphan and
+      // both enter the critical section (the second unlink would delete the first's
+      // freshly-created lock). The rename winner removes it; the loser's rename
+      // fails (source already gone) and it simply retries open(wx).
       const st = await fs.stat(lock).catch(() => null);
       if (st && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-        await fs.unlink(lock).catch(() => {});
+        const claimed = `${lock}.stale.${process.pid}`;
+        try {
+          await fs.rename(lock, claimed);
+          await fs.unlink(claimed).catch(() => {});
+        } catch {
+          // Lost the reclaim race — another process already renamed/removed it.
+        }
         continue;
       }
       if (Date.now() > deadline) {
@@ -330,6 +342,8 @@ export type PendingAction = {
   probeId?: number | null;
   // "cancelled" is a terminal status, not a row removal — see cancelPendingAction.
   status: "pending" | "triggered" | "failed" | "cancelled";
+  // Terminal-resolution timestamp — set when a row moves to triggered, failed, OR
+  // cancelled (despite the name, not success-only). Drives recent-view ordering.
   triggeredAt?: string;
   error?: string;
 };
@@ -357,7 +371,13 @@ export async function getScheduledView(
   const pending = all.filter((a) => a.status === "pending");
   const recent = all
     .filter((a) => a.status !== "pending")
-    .sort((a, b) => (b.triggeredAt ?? "").localeCompare(a.triggeredAt ?? ""))
+    // Fall back to createdAt so a terminal row without a resolution stamp (e.g. a
+    // legacy row) still sorts chronologically instead of to the bottom on "".
+    .sort((a, b) =>
+      (b.triggeredAt ?? b.createdAt ?? "").localeCompare(
+        a.triggeredAt ?? a.createdAt ?? "",
+      ),
+    )
     .slice(0, recentLimit);
   return { pending, recent };
 }
@@ -398,10 +418,14 @@ export async function resolvePendingAction(
     // cross-process resurrection (or a stale caller) from stamping "triggered"
     // onto a row that was already cancelled or resolved.
     if (idx === -1 || rows[idx].status !== "pending") {
-      if (idx !== -1)
-        console.error(
-          `[file-store] refusing to resolve action ${id}: status=${rows[idx].status}`,
-        );
+      // Log both cases: a terminal-status refusal AND an unknown id. Since rows are
+      // never spliced (cancel sets a status), an unknown id is genuinely anomalous
+      // and worth a trace rather than a silent no-op.
+      console.error(
+        idx === -1
+          ? `[file-store] refusing to resolve action ${id}: not found`
+          : `[file-store] refusing to resolve action ${id}: status=${rows[idx].status}`,
+      );
       return { result: undefined, write: false };
     }
     rows[idx].status = result.status;
@@ -418,6 +442,11 @@ export async function cancelPendingAction(id: number): Promise<boolean> {
     // Terminal status, NOT a splice: removing the row would let nextId reuse its
     // id, so a stale cancel/resolve could later hit a different action.
     rows[idx].status = "cancelled";
+    // Stamp the terminal time so the row sorts into getScheduledView's `recent` by
+    // when it resolved. Without it, cancelled rows sort to the bottom on "" and are
+    // the first evicted by the slice — i.e. they silently vanish, the very thing
+    // that view exists to prevent.
+    rows[idx].triggeredAt = new Date().toISOString();
     return { result: true, write: true };
   });
 }

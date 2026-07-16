@@ -35,8 +35,9 @@ Three sets keyed by tool name:
   server, so the only ones the headless brain can call; also callable via
   `POST /tool` without `confirm`.
 - **`IRREVERSIBLE`** — permanent game-state changes (jump, jettison, detach/drop
-  container, salvage, recall — plus `assemble_probe`, `send_message`,
-  `transfer_deuterium`). Never on the MCP server; through `runTool` they return
+  container, salvage, recall, cargo drops — plus `assemble_probe`, `send_message`,
+  `transfer_deuterium`; see `tool-policy.ts` for the exact membership). Never on
+  the MCP server; through `runTool` they return
   `{requiresConfirmation:true}` **without executing** unless `confirm:true`.
 - **`UNREVIEWED`** — reviewed but deliberately held out of the brain's reach
   (`improve_probe`, `turn_on_relay`, `install_waypoint_bookmark`); gated exactly

@@ -99,11 +99,22 @@ export function assertPolicyCoversTools(): void {
 
   const unclassified = [...defined].filter((n) => !classified.includes(n));
   const orphaned = classified.filter((n) => !defined.has(n));
+  // The sets must be pairwise disjoint. Gating is decided by SAFE.has(name), so a
+  // tool that landed in BOTH SAFE and IRREVERSIBLE (e.g. a bad merge) would be
+  // exposed to the brain and run un-gated while coverage/orphan checks stay green —
+  // the one miscategorization that resolves toward the DANGEROUS direction.
+  const counts = new Map<string, number>();
+  for (const n of classified) counts.set(n, (counts.get(n) ?? 0) + 1);
+  const overlapping = [...counts].filter(([, c]) => c > 1).map(([n]) => n);
   const problems: string[] = [];
   if (unclassified.length)
     problems.push(`tools with no policy entry: ${unclassified.join(", ")}`);
   if (orphaned.length)
     problems.push(`policy entries with no such tool: ${orphaned.join(", ")}`);
+  if (overlapping.length)
+    problems.push(
+      `tools classified in more than one set (a SAFE overlap runs un-gated): ${overlapping.join(", ")}`,
+    );
   if (problems.length)
     throw new Error(
       `tool-policy is out of sync with tools.ts — ${problems.join("; ")}`,

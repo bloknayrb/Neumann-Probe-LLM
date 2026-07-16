@@ -99,8 +99,15 @@ export function toToolCall(a: PendingActionPayload): {
         name: "recover_container",
         args: { manny_id: a.mannyId, object_id: a.objectId },
       };
-    default:
-      throw new Error(`Unknown action type`);
+    default: {
+      // Compile-time exhaustiveness: a new PendingActionPayload variant turns this
+      // into a type error rather than a silent runtime throw at poll time.
+      const _exhaustive: never = a;
+      void _exhaustive;
+      throw new Error(
+        `Unknown action type: ${(a as { type?: string }).type ?? "?"}`,
+      );
+    }
   }
 }
 
@@ -162,17 +169,20 @@ function actionMannyId(action: PendingAction): string | null {
  * Is a failed probe fetch worth retrying, or is the probe simply gone?
  *
  * A network error (fetch rejects: timeout, ECONNRESET, DNS) is transient — skip
- * the probe's rows this tick and try again next tick. A 4xx from the game API is
- * the probe answering "no" — most importantly a 404 for a probe that was
- * decommissioned while a row still targeted it — and will never succeed, so its
- * rows must fail loudly rather than retry forever. 429 (rate limit) and 5xx are
- * transient. client.ts formats HTTP errors as "VNG API error (<status>): ...".
+ * the probe's rows this tick and try again next tick. Only a genuinely permanent
+ * status fails the rows loudly: 404 (probe decommissioned while a row still
+ * targeted it), 410 (gone), and 400 (a malformed request that won't change on
+ * retry). Everything else is transient and retried — critically 401/403 (an
+ * expired/rotated VNG_API_KEY hits EVERY probe; failing the whole queue over a
+ * recoverable auth blip is worse than waiting), plus 408/425/429 and all 5xx.
+ * client.ts formats HTTP errors as "VNG API error (<status>): ...".
  */
+const PERMANENT_FETCH_STATUS = new Set([400, 404, 410]);
 function isPermanentFetchError(err: unknown): boolean {
   const status = Number(
     /VNG API error \((\d+)\)/.exec((err as any)?.message ?? "")?.[1],
   );
-  return status >= 400 && status < 500 && status !== 429;
+  return PERMANENT_FETCH_STATUS.has(status);
 }
 
 /**
@@ -203,10 +213,19 @@ async function pollProbe(
         "poller: target probe fetch failed permanently — failing its scheduled rows",
       );
       for (const action of actions) {
-        await resolvePendingAction(action.id, {
-          status: "failed",
-          error: `target probe ${probeId ?? "main"} unavailable: ${msg}`,
-        });
+        try {
+          await resolvePendingAction(action.id, {
+            status: "failed",
+            error: `target probe ${probeId ?? "main"} unavailable: ${msg}`,
+          });
+        } catch (e: any) {
+          // Persisting one failure must not abort the loop, or the remaining rows
+          // stay pending and silently retry the dead probe forever next tick.
+          logger.error(
+            { probeId, actionId: action.id, err: e?.message ?? String(e) },
+            "poller: could not persist permanent-failure status",
+          );
+        }
       }
     } else {
       logger.warn(
@@ -278,7 +297,14 @@ async function pollProbe(
         { actionId: action.id, err: msg },
         "poller: action execution failed",
       );
-      await resolvePendingAction(action.id, { status: "failed", error: msg });
+      try {
+        await resolvePendingAction(action.id, { status: "failed", error: msg });
+      } catch (e: any) {
+        logger.error(
+          { actionId: action.id, err: e?.message ?? String(e) },
+          "poller: could not persist action-failure status",
+        );
+      }
     }
   }
 }
@@ -299,9 +325,17 @@ async function poll(): Promise<void> {
 
   // Each probe fetches and fires independently; allSettled so one probe's
   // failure never aborts the others' due work (Promise.all would reject-fast).
-  await Promise.allSettled(
+  // But allSettled always fulfills, so we MUST inspect the settlements — an
+  // unhandled rejection out of pollProbe would otherwise vanish with no trace,
+  // exactly the silent failure this poller exists to avoid.
+  const results = await Promise.allSettled(
     [...byProbe].map(([pid, actions]) => pollProbe(pid, actions)),
   );
+  for (const r of results) {
+    if (r.status === "rejected") {
+      logger.error({ err: r.reason }, "poller: pollProbe rejected");
+    }
+  }
 }
 
 export function startPoller(): void {
