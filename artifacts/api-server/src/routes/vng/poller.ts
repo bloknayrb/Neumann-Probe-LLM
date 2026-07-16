@@ -1,9 +1,11 @@
 import { logger } from "../../lib/logger.js";
 import * as client from "./client.js";
+import { runTool } from "./run-tool.js";
 import {
   getPendingActions,
   resolvePendingAction,
   type PendingAction,
+  type PendingActionPayload,
 } from "./file-store.js";
 
 const POLL_INTERVAL_MS = 30_000;
@@ -46,33 +48,69 @@ async function checkCondition(
   return false;
 }
 
-async function executeAction(action: PendingAction): Promise<void> {
-  const a = action.action;
+/**
+ * Translate a stored action into the (tool, args) pair `runTool` speaks. The
+ * stored payload is camelCase; the tool schemas are snake_case.
+ */
+export function toToolCall(a: PendingActionPayload): {
+  name: string;
+  args: Record<string, unknown>;
+} {
   switch (a.type) {
     case "move_probe":
-      await client.moveProbe(a.x, a.y, a.z);
-      break;
+      return { name: "move_probe", args: { x: a.x, y: a.y, z: a.z } };
     case "craft_item":
-      await client.craftItem(a.mannyId, a.recipe);
-      break;
+      return {
+        name: "craft_item",
+        args: { manny_id: a.mannyId, recipe: a.recipe },
+      };
     case "mine_resources":
-      await client.mineResources(
-        a.mannyId,
-        a.objectId,
-        a.resources,
-        a.targetAmount,
-        a.targetContainerId
-      );
-      break;
+      return {
+        name: "mine_resources",
+        args: {
+          manny_id: a.mannyId,
+          object_id: a.objectId,
+          resources: a.resources,
+          target_amount: a.targetAmount,
+          target_container_id: a.targetContainerId,
+        },
+      };
     case "detach_container":
-      await client.detachContainer(a.mannyId, a.containerId);
-      break;
+      // A stored detach carries no mode, so it is always a plain drift. Sent
+      // explicitly rather than leaning on the handler's default: the schema
+      // marks mode required, and the default is two layers away in client.ts.
+      return {
+        name: "detach_container",
+        args: {
+          manny_id: a.mannyId,
+          container_id: a.containerId,
+          mode: "drifting",
+        },
+      };
     case "recover_container":
-      await client.recoverContainer(a.mannyId, a.objectId);
-      break;
+      return {
+        name: "recover_container",
+        args: { manny_id: a.mannyId, object_id: a.objectId },
+      };
     default:
       throw new Error(`Unknown action type`);
   }
+}
+
+/**
+ * Fire a due action through the same choke point as every other game action, so
+ * it gets `afterTool` bookkeeping — a scheduled detach used to leave no trace in
+ * detached-containers.json, orphaning the container the moment it drifted.
+ *
+ * `confirm: true` is honest rather than a bypass: consent happened at scheduling
+ * time. `runTool` inspects a schedule_action payload and refuses to create the
+ * row at all unless the operator confirmed the action inside it, so a pending
+ * row for an irreversible action can only exist if it was already approved. The
+ * poller is carrying out a decision, not making one.
+ */
+async function executeAction(action: PendingAction): Promise<void> {
+  const { name, args } = toToolCall(action.action);
+  await runTool(name, args, { confirm: true });
 }
 
 /** Return the manny ID that an action will occupy, if any. */

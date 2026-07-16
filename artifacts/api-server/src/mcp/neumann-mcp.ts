@@ -22,23 +22,17 @@ import {
 import { TOOLS } from "../routes/vng/tools.js";
 import { runTool } from "../routes/vng/run-tool.js";
 import { parseProbeId } from "../routes/vng/client.js";
+import {
+  assertPolicyCoversTools,
+  isExposedToBrain,
+} from "../routes/vng/tool-policy.js";
 
-const SAFE_TOOLS = new Set<string>([
-  "get_game_state",
-  "scan_sector",
-  "craft_item",
-  "atomic_printer_craft",
-  "mine_resources",
-  "inspect_asteroid",
-  "repair_manny",
-  "rename_manny",
-  "deploy_manny",
-  "recover_container",
-  "schedule_action",
-  "cancel_scheduled_action",
-]);
+// Refuse to start on policy/tools drift rather than silently exposing the wrong
+// set. This is the load-bearing check: a shrunken toolset is invisible at
+// runtime — the brain just stops using a capability and never says why.
+assertPolicyCoversTools();
 
-const exposed = TOOLS.filter((t) => SAFE_TOOLS.has(t.function.name));
+const exposed = TOOLS.filter((t) => isExposedToBrain(t.function.name));
 
 // Safe to resolve once: the CLI spawns a fresh subprocess per order (see above),
 // so this never has to change mid-process. A malformed value throws here and
@@ -65,7 +59,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const name = req.params.name;
   const args = (req.params.arguments ?? {}) as Record<string, unknown>;
 
-  if (!SAFE_TOOLS.has(name)) {
+  if (!isExposedToBrain(name)) {
     return {
       isError: true,
       content: [{ type: "text", text: `Unknown or disallowed tool: ${name}` }],

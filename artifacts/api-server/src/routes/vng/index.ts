@@ -9,6 +9,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import * as client from "./client.js";
 import { runTool } from "./run-tool.js";
+import { SAFE } from "./tool-policy.js";
 import { mapSectorObjects } from "./sector-map.js";
 import {
   cancelPendingAction,
@@ -24,23 +25,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MCP_SERVER_PATH = path.join(HERE, "neumann-mcp.mjs");
 const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
 
-// The 12 safe tools the headless brain is allowed to call (MCP-prefixed).
-const ALLOWED_MCP_TOOLS = [
-  "get_game_state",
-  "scan_sector",
-  "craft_item",
-  "atomic_printer_craft",
-  "mine_resources",
-  "inspect_asteroid",
-  "repair_manny",
-  "rename_manny",
-  "deploy_manny",
-  "recover_container",
-  "schedule_action",
-  "cancel_scheduled_action",
-]
-  .map((t) => `mcp__neumann__${t}`)
-  .join(" ");
+// The safe tools the headless brain is allowed to call (MCP-prefixed). Derived
+// from the policy, never hand-listed: this and the MCP server's own filter must
+// agree, and when they were two copies they drifted without anything noticing.
+const ALLOWED_MCP_TOOLS = [...SAFE].map((t) => `mcp__neumann__${t}`).join(" ");
 
 function resolveClaudeBin(): { bin: string; shell: boolean } {
   if (process.env.CLAUDE_BIN)
@@ -153,9 +141,13 @@ router.get("/state", async (req, res) => {
     // sectorObjects is [] — recording that would clobber the last-known-good
     // detail for this sector (visited-sectors store, read by the MAP/SECTORS
     // tabs) with an empty list.
-    if (!sectorUnavailable)
-      recordSector(sector.x, sector.y, sector.z, sectorObjects, probeId).catch(
-        (e) => console.error("[recordSector /state]", e),
+    //
+    // Main probe only: the store is the main probe's log, and polling /state
+    // with a probe selected in the UI must not write that probe's position into
+    // it. Per-probe history: GET /api/probe/{probeId}/visited-sectors.
+    if (!sectorUnavailable && probeId == null)
+      recordSector(sector.x, sector.y, sector.z, sectorObjects).catch((e) =>
+        console.error("[recordSector /state]", e),
       );
 
     const manniesNorm = mannies.map((m: any) => {
