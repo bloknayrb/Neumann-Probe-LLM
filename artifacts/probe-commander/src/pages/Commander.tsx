@@ -4,7 +4,11 @@ import { Maximize2, Minimize2 } from "lucide-react";
 import { GlobeMap } from "./GlobeMap";
 import { SystemMap } from "./SystemMap";
 import { objectIcon, SectorObjectList } from "../components/SectorObject";
-import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
+import {
+  ResizablePanelGroup,
+  ResizablePanel,
+  ResizableHandle,
+} from "@/components/ui/resizable";
 import { useIsDesktop } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
 
@@ -21,8 +25,20 @@ async function fetchJson<T = any>(url: string, init?: RequestInit): Promise<T> {
 type SseEvent =
   | { type: "status"; message: string }
   | { type: "message"; content: string }
-  | { type: "action"; tool: string; params: Record<string, unknown>; id: string }
-  | { type: "result"; tool: string; id: string; success: boolean; data?: unknown; error?: string }
+  | {
+      type: "action";
+      tool: string;
+      params: Record<string, unknown>;
+      id: string;
+    }
+  | {
+      type: "result";
+      tool: string;
+      id: string;
+      success: boolean;
+      data?: unknown;
+      error?: string;
+    }
   | { type: "error"; message: string }
   | { type: "done" };
 
@@ -30,7 +46,14 @@ type ChatMessage =
   | { role: "user"; content: string }
   | { role: "assistant"; events: SseEvent[] };
 
-type SideTab = "telemetry" | "containers" | "sectors" | "scout" | "globe" | "system" | "scheduled";
+type SideTab =
+  | "telemetry"
+  | "containers"
+  | "sectors"
+  | "scout"
+  | "globe"
+  | "system"
+  | "scheduled";
 
 function toolLabel(tool: string): string {
   const labels: Record<string, string> = {
@@ -53,9 +76,23 @@ function toolLabel(tool: string): string {
   return labels[tool] ?? tool.toUpperCase().replace(/_/g, " ");
 }
 
-function GaugeBar({ label, value, color }: { label: string; value: number; color?: string }) {
+function GaugeBar({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: number;
+  color?: string;
+}) {
   const pct = Math.max(0, Math.min(100, value ?? 0));
-  const c = color ?? (pct > 50 ? "hsl(150 80% 45%)" : pct > 25 ? "hsl(45 90% 50%)" : "hsl(0 70% 50%)");
+  const c =
+    color ??
+    (pct > 50
+      ? "hsl(150 80% 45%)"
+      : pct > 25
+        ? "hsl(45 90% 50%)"
+        : "hsl(0 70% 50%)");
   return (
     <div>
       <div className="flex justify-between text-xs mb-1">
@@ -63,8 +100,14 @@ function GaugeBar({ label, value, color }: { label: string; value: number; color
         <span style={{ color: c }}>{pct.toFixed(0)}%</span>
       </div>
       <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, backgroundColor: c, boxShadow: `0 0 6px ${c}` }} />
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{
+            width: `${pct}%`,
+            backgroundColor: c,
+            boxShadow: `0 0 6px ${c}`,
+          }}
+        />
       </div>
     </div>
   );
@@ -74,14 +117,19 @@ function MannyRow({ manny }: { manny: any }) {
   const idle = !manny.currentTask;
   return (
     <div className="flex items-start gap-2 text-xs">
-      <span className={idle ? "text-primary mt-0.5" : "text-yellow-400 mt-0.5 pulse-active"}>
+      <span
+        className={
+          idle ? "text-primary mt-0.5" : "text-yellow-400 mt-0.5 pulse-active"
+        }
+      >
         {idle ? "●" : "◌"}
       </span>
       <div className="flex-1 min-w-0">
         <div className="text-foreground font-medium truncate">{manny.name}</div>
         {!idle && (
           <div className="text-muted-foreground text-[10px]">
-            {manny.currentTask?.toUpperCase().replace(/_/g, " ")} {manny.taskProgressPercent?.toFixed(0)}%
+            {manny.currentTask?.toUpperCase().replace(/_/g, " ")}{" "}
+            {manny.taskProgressPercent?.toFixed(0)}%
           </div>
         )}
       </div>
@@ -92,18 +140,37 @@ function MannyRow({ manny }: { manny: any }) {
 function ApiError({ error }: { error: Error }) {
   return (
     <div className="border border-destructive/50 rounded p-3 space-y-1 bg-destructive/5">
-      <div className="text-xs text-destructive tracking-widest font-bold">API ERROR</div>
-      <div className="text-xs text-destructive/80 break-words font-mono">{error.message}</div>
+      <div className="text-xs text-destructive tracking-widest font-bold">
+        API ERROR
+      </div>
+      <div className="text-xs text-destructive/80 break-words font-mono">
+        {error.message}
+      </div>
       <div className="text-[10px] text-muted-foreground pt-1">
-        Check that <span className="text-foreground font-mono">VNG_API_KEY</span> is set correctly in your <span className="text-foreground font-mono">api-server/.env</span> file.
+        Check that{" "}
+        <span className="text-foreground font-mono">VNG_API_KEY</span> is set
+        correctly in your{" "}
+        <span className="text-foreground font-mono">api-server/.env</span> file.
       </div>
     </div>
   );
 }
 
-function ScanReadinessBar({ scan }: { scan: { currentSectorResidenceSeconds: number; requiredResidenceSeconds: number; scanQuality: number } | null }) {
+function ScanReadinessBar({
+  scan,
+}: {
+  scan: {
+    currentSectorResidenceSeconds: number;
+    requiredResidenceSeconds: number;
+    scanQuality: number;
+  } | null;
+}) {
   if (!scan) return null;
-  const { currentSectorResidenceSeconds: current, requiredResidenceSeconds: required, scanQuality } = scan;
+  const {
+    currentSectorResidenceSeconds: current,
+    requiredResidenceSeconds: required,
+    scanQuality,
+  } = scan;
   const pct = required > 0 ? Math.min(100, (current / required) * 100) : 100;
   const ready = scanQuality >= 1;
   const remainingSec = Math.max(0, required - current);
@@ -118,43 +185,71 @@ function ScanReadinessBar({ scan }: { scan: { currentSectorResidenceSeconds: num
         <span style={{ color }}>{label}</span>
       </div>
       <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-1000"
-          style={{ width: `${pct}%`, backgroundColor: color, boxShadow: ready ? `0 0 6px ${color}` : "none" }} />
+        <div
+          className="h-full rounded-full transition-all duration-1000"
+          style={{
+            width: `${pct}%`,
+            backgroundColor: color,
+            boxShadow: ready ? `0 0 6px ${color}` : "none",
+          }}
+        />
       </div>
     </div>
   );
 }
 
-type ProbeEntry = { id: number; name: string; status: string; isDefault?: boolean };
+type ProbeEntry = {
+  id: number;
+  name: string;
+  status: string;
+  isDefault?: boolean;
+};
 
 function TelemetryPanel({
-  state, error, probeList = [], selectedProbeId = null, onSelectProbe = () => {},
+  state,
+  error,
+  probeList = [],
+  selectedProbeId = null,
+  onSelectProbe = () => {},
 }: {
-  state: any; error: Error | null;
+  state: any;
+  error: Error | null;
   probeList?: ProbeEntry[];
   selectedProbeId?: number | null;
   onSelectProbe?: (id: number | null) => void;
 }) {
   if (error) return <ApiError error={error} />;
   if (!state) {
-    return <div className="text-xs text-muted-foreground italic animate-pulse">LOADING TELEMETRY…</div>;
+    return (
+      <div className="text-xs text-muted-foreground italic animate-pulse">
+        LOADING TELEMETRY…
+      </div>
+    );
   }
-  const { probe, mannies, stowedMannies, sectorObjects, inventory, scan } = state;
-  const sector = probe.sector ?? probe.movement?.target ?? probe.movement?.origin ?? { x: 0, y: 0, z: 0 };
-  const defaultId = probeList.find(p => p.isDefault)?.id ?? probeList[0]?.id ?? null;
+  const { probe, mannies, stowedMannies, sectorObjects, inventory, scan } =
+    state;
+  const sector = probe.sector ??
+    probe.movement?.target ??
+    probe.movement?.origin ?? { x: 0, y: 0, z: 0 };
+  const defaultId =
+    probeList.find((p) => p.isDefault)?.id ?? probeList[0]?.id ?? null;
   const currentId = selectedProbeId ?? defaultId;
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <span className="text-xs text-muted-foreground tracking-widest">PROBE TELEMETRY</span>
-        <span className="text-xs text-primary glow-green">{probe.status?.toUpperCase()}</span>
+        <span className="text-xs text-muted-foreground tracking-widest">
+          PROBE TELEMETRY
+        </span>
+        <span className="text-xs text-primary glow-green">
+          {probe.status?.toUpperCase()}
+        </span>
       </div>
       <div>
         {probeList.length > 1 ? (
           <div className="relative flex items-center gap-1">
             <select
               value={currentId ?? ""}
-              onChange={e => {
+              onChange={(e) => {
                 const id = Number(e.target.value);
                 onSelectProbe(id === defaultId ? null : id);
               }}
@@ -162,19 +257,32 @@ function TelemetryPanel({
               style={{ WebkitAppearance: "none", appearance: "none" }}
               title="Switch probe"
             >
-              {probeList.map(p => (
-                <option key={p.id} value={p.id} style={{ background: "hsl(222 20% 8%)", color: "hsl(150 80% 55%)" }}>
+              {probeList.map((p) => (
+                <option
+                  key={p.id}
+                  value={p.id}
+                  style={{
+                    background: "hsl(222 20% 8%)",
+                    color: "hsl(150 80% 55%)",
+                  }}
+                >
                   {p.name}
                 </option>
               ))}
             </select>
-            <span className="text-primary text-xs pointer-events-none shrink-0 -ml-4">▾</span>
+            <span className="text-primary text-xs pointer-events-none shrink-0 -ml-4">
+              ▾
+            </span>
           </div>
         ) : (
-          <div className="text-lg font-bold glow-green tracking-wider">{probe.name}</div>
+          <div className="text-lg font-bold glow-green tracking-wider">
+            {probe.name}
+          </div>
         )}
         <div className="text-xs text-muted-foreground mt-0.5">
-          {probe.status === "accelerating" || probe.status === "cruising" || probe.status === "decelerating"
+          {probe.status === "accelerating" ||
+          probe.status === "cruising" ||
+          probe.status === "decelerating"
             ? `→ [${sector.x},${sector.y},${sector.z}]`
             : `SECTOR [${sector.x},${sector.y},${sector.z}]`}
         </div>
@@ -183,33 +291,57 @@ function TelemetryPanel({
         <div>
           <div className="flex justify-between text-xs mb-1">
             <span className="text-muted-foreground">FUEL</span>
-            <span className="text-primary">{(probe.fuelDeuterium ?? 0).toFixed(2)} ECE</span>
+            <span className="text-primary">
+              {(probe.fuelDeuterium ?? 0).toFixed(2)} ECE
+            </span>
           </div>
           <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-            <div className="h-full rounded-full"
-              style={{ width: `${Math.min(100, (probe.fuelDeuterium ?? 0))}%`, backgroundColor: "hsl(150 80% 45%)", boxShadow: "0 0 6px hsl(150 80% 45%)" }} />
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${Math.min(100, probe.fuelDeuterium ?? 0)}%`,
+                backgroundColor: "hsl(150 80% 45%)",
+                boxShadow: "0 0 6px hsl(150 80% 45%)",
+              }}
+            />
           </div>
         </div>
         <GaugeBar label="HULL" value={probe.integrityPercent} />
         <ScanReadinessBar scan={scan} />
         <div className="flex justify-between text-xs">
           <span className="text-muted-foreground">CARGO</span>
-          <span className="text-muted-foreground">{(inventory?.usedCapacity ?? 0).toFixed(2)}/{inventory?.capacity ?? 0} ECE</span>
+          <span className="text-muted-foreground">
+            {(inventory?.usedCapacity ?? 0).toFixed(2)}/
+            {inventory?.capacity ?? 0} ECE
+          </span>
         </div>
       </div>
       {(mannies?.length > 0 || stowedMannies?.length > 0) && (
         <div>
           <div className="text-xs text-muted-foreground tracking-widest mb-2">
-            MANNIES ({mannies?.length ?? 0} active{stowedMannies?.length > 0 ? `, ${stowedMannies.length} stowed` : ""})
+            MANNIES ({mannies?.length ?? 0} active
+            {stowedMannies?.length > 0
+              ? `, ${stowedMannies.length} stowed`
+              : ""}
+            )
           </div>
           <div className="space-y-1.5">
-            {mannies?.map((m: any) => <MannyRow key={m.id} manny={m} />)}
+            {mannies?.map((m: any) => (
+              <MannyRow key={m.id} manny={m} />
+            ))}
             {stowedMannies?.map((m: any) => (
-              <div key={m.itemId} className="flex items-start gap-2 text-xs opacity-50">
+              <div
+                key={m.itemId}
+                className="flex items-start gap-2 text-xs opacity-50"
+              >
                 <span className="text-muted-foreground mt-0.5">◇</span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-foreground font-medium truncate">{m.name}</div>
-                  <div className="text-muted-foreground text-[10px]">STOWED — say "deploy {m.name}" to activate</div>
+                  <div className="text-foreground font-medium truncate">
+                    {m.name}
+                  </div>
+                  <div className="text-muted-foreground text-[10px]">
+                    STOWED — say "deploy {m.name}" to activate
+                  </div>
                 </div>
               </div>
             ))}
@@ -218,14 +350,22 @@ function TelemetryPanel({
       )}
       {sectorObjects?.length > 0 && (
         <div>
-          <div className="text-xs text-muted-foreground tracking-widest mb-2">SECTOR ({sectorObjects.length})</div>
+          <div className="text-xs text-muted-foreground tracking-widest mb-2">
+            SECTOR ({sectorObjects.length})
+          </div>
           <div className="space-y-1 max-h-48 overflow-y-auto">
             {sectorObjects.map((o: any, i: number) => (
               <div key={i} className="text-xs flex gap-2">
-                <span className="text-accent shrink-0">{objectIcon(o.type)}</span>
-                <span className={`text-muted-foreground ${o.type === "waypoint_bookmark" ? "break-words" : "truncate"}`}>
+                <span className="text-accent shrink-0">
+                  {objectIcon(o.type)}
+                </span>
+                <span
+                  className={`text-muted-foreground ${o.type === "waypoint_bookmark" ? "break-words" : "truncate"}`}
+                >
                   {o.name ?? o.type}
-                  {o.resourceTypes?.length ? ` [${o.resourceTypes.join(",")}]` : ""}
+                  {o.resourceTypes?.length
+                    ? ` [${o.resourceTypes.join(",")}]`
+                    : ""}
                 </span>
               </div>
             ))}
@@ -240,7 +380,11 @@ function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+      onClick={() => {
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
       className="text-[10px] text-muted-foreground hover:text-primary transition-colors px-1"
       title="Copy ID"
     >
@@ -263,17 +407,32 @@ function ContainersPanel({ refetchSignal }: { refetchSignal: number }) {
   const onboard: any[] = data?.onboard ?? [];
   const floating: any[] = data?.floating ?? [];
 
-  if (isLoading) return <div className="text-xs text-muted-foreground italic animate-pulse">LOADING…</div>;
+  if (isLoading)
+    return (
+      <div className="text-xs text-muted-foreground italic animate-pulse">
+        LOADING…
+      </div>
+    );
   if (error) return <ApiError error={error as Error} />;
 
-  const CapacityBar = ({ used, total }: { used: number | null; total: number | null }) => {
+  const CapacityBar = ({
+    used,
+    total,
+  }: {
+    used: number | null;
+    total: number | null;
+  }) => {
     if (used == null || total == null || total === 0) return null;
     const pct = Math.min(100, (used / total) * 100);
-    const color = pct >= 70 ? "bg-primary" : pct >= 30 ? "bg-yellow-500" : "bg-destructive";
+    const color =
+      pct >= 70 ? "bg-primary" : pct >= 30 ? "bg-yellow-500" : "bg-destructive";
     return (
       <div className="space-y-0.5">
         <div className="h-1 bg-muted rounded-full overflow-hidden">
-          <div className={`h-full ${color} rounded-full`} style={{ width: `${pct}%` }} />
+          <div
+            className={`h-full ${color} rounded-full`}
+            style={{ width: `${pct}%` }}
+          />
         </div>
         <div className="text-[10px] text-muted-foreground/60 text-right">
           {used.toFixed(2)} / {total.toFixed(0)} ECE
@@ -282,15 +441,28 @@ function ContainersPanel({ refetchSignal }: { refetchSignal: number }) {
     );
   };
 
-  const ContentsList = ({ contents }: { contents: { resource: string; amount: number }[] }) => {
+  const ContentsList = ({
+    contents,
+  }: {
+    contents: { resource: string; amount: number }[];
+  }) => {
     if (!contents || contents.length === 0)
-      return <div className="text-[10px] text-muted-foreground/40 italic">empty</div>;
+      return (
+        <div className="text-[10px] text-muted-foreground/40 italic">empty</div>
+      );
     return (
       <div className="space-y-0.5">
         {contents.map((item) => (
-          <div key={item.resource} className="flex items-center justify-between text-[10px]">
-            <span className="text-foreground/80">{item.resource.replace(/_/g, " ")}</span>
-            <span className="text-primary font-mono">{item.amount.toFixed(2)} ECE</span>
+          <div
+            key={item.resource}
+            className="flex items-center justify-between text-[10px]"
+          >
+            <span className="text-foreground/80">
+              {item.resource.replace(/_/g, " ")}
+            </span>
+            <span className="text-primary font-mono">
+              {item.amount.toFixed(2)} ECE
+            </span>
           </div>
         ))}
       </div>
@@ -299,12 +471,16 @@ function ContainersPanel({ refetchSignal }: { refetchSignal: number }) {
 
   return (
     <div className="space-y-4">
-
       {/* Probe hull storage */}
       {probeStorage && (
         <div className="border border-primary/40 rounded p-2.5 text-xs space-y-1.5">
-          <div className="font-bold text-primary tracking-wider">PROBE STORAGE</div>
-          <CapacityBar used={probeStorage.usedCapacity} total={probeStorage.capacity} />
+          <div className="font-bold text-primary tracking-wider">
+            PROBE STORAGE
+          </div>
+          <CapacityBar
+            used={probeStorage.usedCapacity}
+            total={probeStorage.capacity}
+          />
           <ContentsList contents={probeStorage.contents} />
           {probeStorage.items?.length > 0 && (
             <div className="space-y-0.5">
@@ -321,75 +497,99 @@ function ContainersPanel({ refetchSignal }: { refetchSignal: number }) {
       {/* On-board containers */}
       <div className="space-y-2">
         <button
-          onClick={() => setShowOnboard(v => !v)}
+          onClick={() => setShowOnboard((v) => !v)}
           className="w-full flex items-center justify-between text-xs text-muted-foreground tracking-widest hover:text-foreground transition-colors"
         >
           <span>ON-BOARD ({onboard.length})</span>
           <span>{showOnboard ? "▲" : "▼"}</span>
         </button>
-        {showOnboard && (onboard.length === 0
-          ? <div className="text-xs text-muted-foreground/40 italic">none</div>
-          : <div className="space-y-2">{onboard.map((c: any) => (
-            <div key={c.id} className="border border-border rounded p-2.5 text-xs space-y-1.5">
-              <div className="font-bold text-foreground">{c.containerName}</div>
-              <CapacityBar used={c.usedCapacity} total={c.capacity} />
-              <ContentsList contents={c.contents} />
+        {showOnboard &&
+          (onboard.length === 0 ? (
+            <div className="text-xs text-muted-foreground/40 italic">none</div>
+          ) : (
+            <div className="space-y-2">
+              {onboard.map((c: any) => (
+                <div
+                  key={c.id}
+                  className="border border-border rounded p-2.5 text-xs space-y-1.5"
+                >
+                  <div className="font-bold text-foreground">
+                    {c.containerName}
+                  </div>
+                  <CapacityBar used={c.usedCapacity} total={c.capacity} />
+                  <ContentsList contents={c.contents} />
+                </div>
+              ))}
             </div>
-          ))}</div>
-        )}
+          ))}
       </div>
 
       {/* Floating containers */}
       <div className="space-y-2">
         <button
-          onClick={() => setShowFloating(v => !v)}
+          onClick={() => setShowFloating((v) => !v)}
           className="w-full flex items-center justify-between text-xs text-muted-foreground tracking-widest hover:text-foreground transition-colors"
         >
           <span>FLOATING ({floating.length})</span>
           <span>{showFloating ? "▲" : "▼"}</span>
         </button>
-        {showFloating && (floating.length === 0
-          ? <div className="text-xs text-muted-foreground/40 italic">none in current sector</div>
-          : <div className="space-y-2">{floating.map((c: any) => (
-            <div key={c.id} className="border border-accent/40 rounded p-2.5 text-xs space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-bold text-foreground">{c.containerName}</span>
-                <span className="text-[10px] text-muted-foreground/60">
-                  [{c.sectorX},{c.sectorY},{c.sectorZ}]
-                </span>
-              </div>
-
-              {c.anchorObjectId && (
-                <div className="text-[10px] text-muted-foreground/60">
-                  anchored · {c.anchorObjectName ?? c.anchorObjectId}
-                </div>
-              )}
-
-              <CapacityBar used={c.usedCapacity} total={c.capacity} />
-              <ContentsList contents={c.contents} />
-
-              {c.sectorObjectId && (
-                <div className="bg-primary/5 border border-primary/20 rounded px-2 py-1.5 space-y-0.5">
-                  <div className="text-[10px] text-primary/70 tracking-wider">SECTOR OBJECT ID</div>
-                  <div className="flex items-start gap-1">
-                    <span className="text-primary font-mono text-[10px] break-all leading-tight flex-1">
-                      {c.sectorObjectId}
-                    </span>
-                    <CopyButton text={c.sectorObjectId} />
-                  </div>
-                </div>
-              )}
-
-              {c.mannyName && (
-                <div className="text-muted-foreground/50 text-[10px]">
-                  By {c.mannyName} · {c.detachedAt ? new Date(c.detachedAt).toLocaleString() : ""}
-                </div>
-              )}
+        {showFloating &&
+          (floating.length === 0 ? (
+            <div className="text-xs text-muted-foreground/40 italic">
+              none in current sector
             </div>
-          ))}</div>
-        )}
-      </div>
+          ) : (
+            <div className="space-y-2">
+              {floating.map((c: any) => (
+                <div
+                  key={c.id}
+                  className="border border-accent/40 rounded p-2.5 text-xs space-y-1.5"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-foreground">
+                      {c.containerName}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/60">
+                      [{c.sectorX},{c.sectorY},{c.sectorZ}]
+                    </span>
+                  </div>
 
+                  {c.anchorObjectId && (
+                    <div className="text-[10px] text-muted-foreground/60">
+                      anchored · {c.anchorObjectName ?? c.anchorObjectId}
+                    </div>
+                  )}
+
+                  <CapacityBar used={c.usedCapacity} total={c.capacity} />
+                  <ContentsList contents={c.contents} />
+
+                  {c.sectorObjectId && (
+                    <div className="bg-primary/5 border border-primary/20 rounded px-2 py-1.5 space-y-0.5">
+                      <div className="text-[10px] text-primary/70 tracking-wider">
+                        SECTOR OBJECT ID
+                      </div>
+                      <div className="flex items-start gap-1">
+                        <span className="text-primary font-mono text-[10px] break-all leading-tight flex-1">
+                          {c.sectorObjectId}
+                        </span>
+                        <CopyButton text={c.sectorObjectId} />
+                      </div>
+                    </div>
+                  )}
+
+                  {c.mannyName && (
+                    <div className="text-muted-foreground/50 text-[10px]">
+                      By {c.mannyName} ·{" "}
+                      {c.detachedAt
+                        ? new Date(c.detachedAt).toLocaleString()
+                        : ""}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+      </div>
     </div>
   );
 }
@@ -405,18 +605,31 @@ function SectorsPanel({ refetchSignal }: { refetchSignal: number }) {
 
   const [expanded, setExpanded] = useState<number | null>(null);
 
-  if (isLoading) return <div className="text-xs text-muted-foreground italic animate-pulse">LOADING…</div>;
+  if (isLoading)
+    return (
+      <div className="text-xs text-muted-foreground italic animate-pulse">
+        LOADING…
+      </div>
+    );
   if (error) return <ApiError error={error as Error} />;
-  if (sectors.length === 0) return (
-    <div className="text-xs text-muted-foreground italic">No sectors recorded yet. The current sector is logged automatically.</div>
-  );
+  if (sectors.length === 0)
+    return (
+      <div className="text-xs text-muted-foreground italic">
+        No sectors recorded yet. The current sector is logged automatically.
+      </div>
+    );
 
   return (
     <div className="space-y-2">
-      <div className="text-xs text-muted-foreground tracking-widest">VISITED SECTORS ({sectors.length})</div>
+      <div className="text-xs text-muted-foreground tracking-widest">
+        VISITED SECTORS ({sectors.length})
+      </div>
       <div className="space-y-2">
         {sectors.map((s: any) => (
-          <div key={s.id} className="border border-border rounded text-xs overflow-hidden">
+          <div
+            key={s.id}
+            className="border border-border rounded text-xs overflow-hidden"
+          >
             {/* Header — always visible */}
             <button
               className="w-full text-left p-2.5 space-y-1.5 hover:bg-muted/20 transition-colors"
@@ -427,19 +640,29 @@ function SectorsPanel({ refetchSignal }: { refetchSignal: number }) {
                   [{s.sectorX},{s.sectorY},{s.sectorZ}]
                 </span>
                 <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground text-[10px]">{s.visitCount}×</span>
-                  <span className="text-muted-foreground text-[10px]">{expanded === s.id ? "▲" : "▼"}</span>
+                  <span className="text-muted-foreground text-[10px]">
+                    {s.visitCount}×
+                  </span>
+                  <span className="text-muted-foreground text-[10px]">
+                    {expanded === s.id ? "▲" : "▼"}
+                  </span>
                 </div>
               </div>
               {(s.resourceSummary as string[])?.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {(s.resourceSummary as string[]).map((r: string) => (
-                    <span key={r} className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px]">{r}</span>
+                    <span
+                      key={r}
+                      className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px]"
+                    >
+                      {r}
+                    </span>
                   ))}
                 </div>
               )}
               <div className="text-muted-foreground/60 text-[10px]">
-                {(s.objects as any[])?.length ?? 0} objects · {new Date(s.lastVisitedAt).toLocaleString()}
+                {(s.objects as any[])?.length ?? 0} objects ·{" "}
+                {new Date(s.lastVisitedAt).toLocaleString()}
               </div>
             </button>
 
@@ -457,59 +680,92 @@ function SectorsPanel({ refetchSignal }: { refetchSignal: number }) {
 }
 
 function EventRow({ event }: { event: SseEvent }) {
-  if (event.type === "status") return (
-    <div className="text-xs text-muted-foreground italic">▸ {event.message}</div>
-  );
-  if (event.type === "message") return (
-    <div className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{event.content}</div>
-  );
+  if (event.type === "status")
+    return (
+      <div className="text-xs text-muted-foreground italic">
+        ▸ {event.message}
+      </div>
+    );
+  if (event.type === "message")
+    return (
+      <div className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
+        {event.content}
+      </div>
+    );
   if (event.type === "action") {
     const paramStr = Object.entries(event.params)
-      .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ");
+      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+      .join(" ");
     return (
       <div className="py-1 border-l-2 border-accent pl-3 space-y-0.5">
-        <div className="text-xs text-accent font-bold tracking-wider">⟶ {toolLabel(event.tool)}</div>
-        {paramStr && <div className="text-xs text-muted-foreground font-mono break-all">{paramStr}</div>}
+        <div className="text-xs text-accent font-bold tracking-wider">
+          ⟶ {toolLabel(event.tool)}
+        </div>
+        {paramStr && (
+          <div className="text-xs text-muted-foreground font-mono break-all">
+            {paramStr}
+          </div>
+        )}
       </div>
     );
   }
   if (event.type === "result") {
-    if (!event.success) return (
-      <div className="text-xs text-destructive pl-3 border-l-2 border-destructive">✕ {event.error}</div>
-    );
+    if (!event.success)
+      return (
+        <div className="text-xs text-destructive pl-3 border-l-2 border-destructive">
+          ✕ {event.error}
+        </div>
+      );
     return (
-      <div className="text-xs text-primary pl-3 border-l-2 border-primary">✓ {toolLabel(event.tool)} OK</div>
+      <div className="text-xs text-primary pl-3 border-l-2 border-primary">
+        ✓ {toolLabel(event.tool)} OK
+      </div>
     );
   }
-  if (event.type === "error") return (
-    <div className="text-xs text-destructive glow-red">⚠ {event.message}</div>
-  );
+  if (event.type === "error")
+    return (
+      <div className="text-xs text-destructive glow-red">⚠ {event.message}</div>
+    );
   return null;
 }
 
 function AssistantBubble({ events }: { events: SseEvent[] }) {
-  const visible = events.filter(e =>
-    e.type === "message" || e.type === "action" || e.type === "result" ||
-    e.type === "status" || e.type === "error"
+  const visible = events.filter(
+    (e) =>
+      e.type === "message" ||
+      e.type === "action" ||
+      e.type === "result" ||
+      e.type === "status" ||
+      e.type === "error",
   );
   if (visible.length === 0) return null;
   return (
     <div className="space-y-1.5 border border-border rounded p-3 bg-card/60 border-glow">
-      {visible.map((e, i) => <EventRow key={i} event={e} />)}
+      {visible.map((e, i) => (
+        <EventRow key={i} event={e} />
+      ))}
     </div>
   );
 }
 
-function ScoutPanel({ initialTarget }: { initialTarget?: { x: number; y: number; z: number } | null }) {
+function ScoutPanel({
+  initialTarget,
+}: {
+  initialTarget?: { x: number; y: number; z: number } | null;
+}) {
   const [coords, setCoords] = useState({ x: "", y: "", z: "" });
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const doScout = useCallback(async (x: number, y: number, z: number) => {
-    setLoading(true); setError(null); setResult(null);
+    setLoading(true);
+    setError(null);
+    setResult(null);
     try {
-      const data = await fetchJson(`${BASE}/api/vng/log/scout?x=${x}&y=${y}&z=${z}`);
+      const data = await fetchJson(
+        `${BASE}/api/vng/log/scout?x=${x}&y=${y}&z=${z}`,
+      );
       setResult(data);
     } catch (e: any) {
       setError(e.message);
@@ -520,8 +776,13 @@ function ScoutPanel({ initialTarget }: { initialTarget?: { x: number; y: number;
 
   useEffect(() => {
     if (!initialTarget) return;
-    setCoords({ x: String(initialTarget.x), y: String(initialTarget.y), z: String(initialTarget.z) });
-    setResult(null); setError(null);
+    setCoords({
+      x: String(initialTarget.x),
+      y: String(initialTarget.y),
+      z: String(initialTarget.z),
+    });
+    setResult(null);
+    setError(null);
   }, [initialTarget]);
 
   const prevTarget = useRef<typeof initialTarget>(null);
@@ -532,8 +793,13 @@ function ScoutPanel({ initialTarget }: { initialTarget?: { x: number; y: number;
   }, [initialTarget, doScout]);
 
   const scout = () => {
-    const x = parseInt(coords.x, 10), y = parseInt(coords.y, 10), z = parseInt(coords.z, 10);
-    if ([x, y, z].some(isNaN)) { setError("Enter valid integers for x, y, z"); return; }
+    const x = parseInt(coords.x, 10),
+      y = parseInt(coords.y, 10),
+      z = parseInt(coords.z, 10);
+    if ([x, y, z].some(isNaN)) {
+      setError("Enter valid integers for x, y, z");
+      return;
+    }
     doScout(x, y, z);
   };
 
@@ -542,16 +808,19 @@ function ScoutPanel({ initialTarget }: { initialTarget?: { x: number; y: number;
       type="number"
       placeholder={k}
       value={coords[k]}
-      onChange={e => setCoords(p => ({ ...p, [k]: e.target.value }))}
+      onChange={(e) => setCoords((p) => ({ ...p, [k]: e.target.value }))}
       className="w-16 bg-background border border-border rounded px-2 py-1 text-xs text-center font-mono text-foreground focus:outline-none focus:border-primary"
     />
   );
 
   return (
     <div className="space-y-3">
-      <div className="text-xs text-muted-foreground tracking-widest">SECTOR SCOUT</div>
+      <div className="text-xs text-muted-foreground tracking-widest">
+        SECTOR SCOUT
+      </div>
       <div className="text-[10px] text-muted-foreground/60">
-        Query any sector's contents before travelling. Coordinates must sum to an even number.
+        Query any sector's contents before travelling. Coordinates must sum to
+        an even number.
       </div>
 
       <div className="flex items-center gap-1.5">
@@ -571,9 +840,14 @@ function ScoutPanel({ initialTarget }: { initialTarget?: { x: number; y: number;
         <div className="flex items-start gap-2 text-xs text-amber-400/80 bg-amber-400/5 border border-amber-400/20 rounded p-2">
           <span className="mt-0.5">⏳</span>
           <div>
-            <div>Sensor data not ready — probe still collecting readings for this sector.</div>
+            <div>
+              Sensor data not ready — probe still collecting readings for this
+              sector.
+            </div>
             {result.retryIn && (
-              <div className="text-muted-foreground mt-0.5">Try again in {result.retryIn}.</div>
+              <div className="text-muted-foreground mt-0.5">
+                Try again in {result.retryIn}.
+              </div>
             )}
           </div>
         </div>
@@ -587,14 +861,22 @@ function ScoutPanel({ initialTarget }: { initialTarget?: { x: number; y: number;
           {result.resourceSummary?.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {result.resourceSummary.map((r: string) => (
-                <span key={r} className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px]">{r}</span>
+                <span
+                  key={r}
+                  className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px]"
+                >
+                  {r}
+                </span>
               ))}
             </div>
           )}
-          {result.objects?.length === 0
-            ? <div className="text-xs text-muted-foreground/40 italic">Empty sector — no objects detected.</div>
-            : <SectorObjectList objects={result.objects} />
-          }
+          {result.objects?.length === 0 ? (
+            <div className="text-xs text-muted-foreground/40 italic">
+              Empty sector — no objects detected.
+            </div>
+          ) : (
+            <SectorObjectList objects={result.objects} />
+          )}
         </div>
       )}
     </div>
@@ -609,35 +891,51 @@ function ScheduledPanel({ refetchSignal }: { refetchSignal: number }) {
   });
 
   const actions: any[] = data?.actions ?? [];
+  const recent: any[] = data?.recent ?? [];
 
   const cancel = async (id: number) => {
     await fetch(`${BASE}/api/vng/scheduled/${id}`, { method: "DELETE" });
     refetch();
   };
 
-  if (isLoading) return <div className="text-xs text-muted-foreground italic animate-pulse">LOADING…</div>;
+  if (isLoading)
+    return (
+      <div className="text-xs text-muted-foreground italic animate-pulse">
+        LOADING…
+      </div>
+    );
   if (error) return <ApiError error={error as Error} />;
 
   return (
     <div className="space-y-3">
-      <div className="text-xs text-muted-foreground tracking-widest">SCHEDULED ACTIONS</div>
+      <div className="text-xs text-muted-foreground tracking-widest">
+        SCHEDULED ACTIONS
+      </div>
       <div className="text-[10px] text-muted-foreground/50">
         The poller checks every 30 s and fires when the condition is met.
       </div>
       {actions.length === 0 ? (
-        <div className="text-xs text-muted-foreground/40 italic">No pending actions.</div>
+        <div className="text-xs text-muted-foreground/40 italic">
+          No pending actions.
+        </div>
       ) : (
         <div className="space-y-2">
           {actions.map((a: any) => {
-            const cond = a.condition?.type === "manny_idle"
-              ? `when ${a.condition.mannyName ?? a.condition.mannyId} is idle`
-              : a.condition?.type === "probe_idle"
-              ? "when probe is idle"
-              : a.condition?.type ?? "?";
+            const cond =
+              a.condition?.type === "manny_idle"
+                ? `when ${a.condition.mannyName ?? a.condition.mannyId} is idle`
+                : a.condition?.type === "probe_idle"
+                  ? "when probe is idle"
+                  : (a.condition?.type ?? "?");
             return (
-              <div key={a.id} className="border border-border rounded p-2 space-y-1">
+              <div
+                key={a.id}
+                className="border border-border rounded p-2 space-y-1"
+              >
                 <div className="flex items-start justify-between gap-2">
-                  <span className="text-xs text-foreground font-mono">#{a.id}</span>
+                  <span className="text-xs text-foreground font-mono">
+                    #{a.id}
+                  </span>
                   <button
                     onClick={() => cancel(a.id)}
                     className="text-[10px] text-destructive hover:text-destructive/70 transition-colors shrink-0"
@@ -647,11 +945,42 @@ function ScheduledPanel({ refetchSignal }: { refetchSignal: number }) {
                   </button>
                 </div>
                 <div className="text-xs text-primary/90">{a.description}</div>
-                <div className="text-[10px] text-muted-foreground">⏳ {cond}</div>
+                <div className="text-[10px] text-muted-foreground">
+                  ⏳ {cond}
+                </div>
                 <div className="text-[10px] text-muted-foreground/50 font-mono">
                   action: {a.action?.type}
-                  {a.action?.type === "move_probe" ? ` → (${a.action.x},${a.action.y},${a.action.z})` : ""}
+                  {a.action?.type === "move_probe"
+                    ? ` → (${a.action.x},${a.action.y},${a.action.z})`
+                    : ""}
                 </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {recent.length > 0 && (
+        <div className="space-y-1 pt-2">
+          <div className="text-[10px] text-muted-foreground/50 tracking-widest">
+            RECENT (triggered / failed / cancelled)
+          </div>
+          {recent.map((a: any) => {
+            const color =
+              a.status === "failed"
+                ? "text-destructive"
+                : a.status === "cancelled"
+                  ? "text-muted-foreground/50"
+                  : "text-primary/60";
+            return (
+              <div
+                key={a.id}
+                className="text-[10px] font-mono flex items-start gap-1.5"
+              >
+                <span className={color}>{a.status}</span>
+                <span className="text-muted-foreground/60 truncate">
+                  #{a.id} {a.description}
+                  {a.error ? ` — ${a.error}` : ""}
+                </span>
               </div>
             );
           })}
@@ -663,27 +992,42 @@ function ScheduledPanel({ refetchSignal }: { refetchSignal: number }) {
 
 export default function Commander() {
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>([{
-    role: "assistant",
-    events: [{
-      type: "message",
-      content: "PROBE COMMANDER ONLINE.\n\nGive me a natural language command and I'll execute the necessary operations.\n\nExamples:\n• \"Have a Manny craft an additional container, then detach it and mine metals into it\"\n• \"Tell me what resources the sector has\"\n• \"Recall manny-3 and repair them to full integrity\"",
-    }],
-  }]);
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      role: "assistant",
+      events: [
+        {
+          type: "message",
+          content:
+            'PROBE COMMANDER ONLINE.\n\nGive me a natural language command and I\'ll execute the necessary operations.\n\nExamples:\n• "Have a Manny craft an additional container, then detach it and mine metals into it"\n• "Tell me what resources the sector has"\n• "Recall manny-3 and repair them to full integrity"',
+        },
+      ],
+    },
+  ]);
   const [isRunning, setIsRunning] = useState(false);
   const [liveEvents, setLiveEvents] = useState<SseEvent[]>([]);
   const [sideTab, setSideTab] = useState<SideTab>("telemetry");
   const [logRefetch, setLogRefetch] = useState(0);
-  const [scoutTarget, setScoutTarget] = useState<{ x: number; y: number; z: number } | null>(null);
+  const [scoutTarget, setScoutTarget] = useState<{
+    x: number;
+    y: number;
+    z: number;
+  } | null>(null);
   const [selectedProbeId, setSelectedProbeId] = useState<number | null>(null);
 
   // Fill-window-width preference. Pane sizes persist via the panel group's
   // autoSaveId; this boolean is the only value we hand-persist.
   const [fillWidth, setFillWidth] = useState<boolean>(() => {
-    try { return localStorage.getItem("pc-fill-width") === "1"; } catch { return false; }
+    try {
+      return localStorage.getItem("pc-fill-width") === "1";
+    } catch {
+      return false;
+    }
   });
   useEffect(() => {
-    try { localStorage.setItem("pc-fill-width", fillWidth ? "1" : "0"); } catch {}
+    try {
+      localStorage.setItem("pc-fill-width", fillWidth ? "1" : "0");
+    } catch {}
   }, [fillWidth]);
   const isDesktop = useIsDesktop();
 
@@ -700,18 +1044,21 @@ export default function Commander() {
     staleTime: 30000,
   });
 
-  const probeList: ProbeEntry[] = (probeListData?.probes ?? []).map((p: any) => ({
-    id: p.id,
-    name: p.name,
-    status: p.status,
-    isDefault: p.isDefault ?? (p.id === probeListData?.defaultProbeId),
-  }));
+  const probeList: ProbeEntry[] = (probeListData?.probes ?? []).map(
+    (p: any) => ({
+      id: p.id,
+      name: p.name,
+      status: p.status,
+      isDefault: p.isDefault ?? p.id === probeListData?.defaultProbeId,
+    }),
+  );
 
   const { data: state, error: stateError } = useQuery({
     queryKey: ["probe-state", selectedProbeId],
-    queryFn: () => fetchJson(
-      `${BASE}/api/vng/state${selectedProbeId ? `?probeId=${selectedProbeId}` : ""}`
-    ),
+    queryFn: () =>
+      fetchJson(
+        `${BASE}/api/vng/state${selectedProbeId ? `?probeId=${selectedProbeId}` : ""}`,
+      ),
     refetchInterval: 30000,
     retry: 1,
   });
@@ -722,7 +1069,8 @@ export default function Commander() {
   // immediately when the tab opens, regardless of when the user navigates to it.
   const { data: sectorsData } = useQuery({
     queryKey: ["sectors-globe"],
-    queryFn: () => fetchJson(`${BASE}/api/vng/log/sectors`, { cache: "no-store" }),
+    queryFn: () =>
+      fetchJson(`${BASE}/api/vng/log/sectors`, { cache: "no-store" }),
     retry: 1,
     refetchInterval: 60_000,
     staleTime: 30_000,
@@ -730,7 +1078,9 @@ export default function Commander() {
 
   // Scan all visited sectors via SCUT/scout API, then refetch globe data
   const handleRefreshSectors = useCallback(async () => {
-    const r = await fetch(`${BASE}/api/vng/log/sectors/refresh`, { method: "POST" });
+    const r = await fetch(`${BASE}/api/vng/log/sectors/refresh`, {
+      method: "POST",
+    });
     if (!r.ok) throw new Error(`Refresh failed: ${r.status}`);
     await queryClient.invalidateQueries({ queryKey: ["sectors-globe"] });
     await queryClient.refetchQueries({ queryKey: ["sectors-globe"] });
@@ -746,7 +1096,7 @@ export default function Commander() {
     setInput("");
     setIsRunning(true);
     setLiveEvents([]);
-    setMessages(prev => [...prev, { role: "user", content: cmd }]);
+    setMessages((prev) => [...prev, { role: "user", content: cmd }]);
 
     const events: SseEvent[] = [];
     try {
@@ -781,14 +1131,17 @@ export default function Commander() {
       events.push({ type: "error", message: err.message });
     }
 
-    setMessages(prev => [...prev, { role: "assistant", events }]);
+    setMessages((prev) => [...prev, { role: "assistant", events }]);
     setLiveEvents([]);
     setIsRunning(false);
-    setLogRefetch(n => n + 1);
+    setLogRefetch((n) => n + 1);
   }, [input, isRunning, selectedProbeId]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendCommand(); }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendCommand();
+    }
   };
 
   const globeCenter = useMemo(() => {
@@ -796,20 +1149,39 @@ export default function Commander() {
     // Active-transit statuses per the ProbeMovement.status enum. ("moving" is
     // kept as a defensive superset in case live values ever differ from spec —
     // the previous `=== "moving"` alone matched no real enum value.)
-    const ACTIVE = ["preparing", "accelerating", "cruising", "decelerating", "moving"];
-    const inTransit = ACTIVE.includes(mv?.status) || ACTIVE.includes(state?.probe?.status);
+    const ACTIVE = [
+      "preparing",
+      "accelerating",
+      "cruising",
+      "decelerating",
+      "moving",
+    ];
+    const inTransit =
+      ACTIVE.includes(mv?.status) || ACTIVE.includes(state?.probe?.status);
     // prior = last known departure point (from any completed or in-progress trip)
-    const px = mv?.origin?.x, py = mv?.origin?.y, pz = mv?.origin?.z;
+    const px = mv?.origin?.x,
+      py = mv?.origin?.y,
+      pz = mv?.origin?.z;
     const hasPrior = px !== undefined && py !== undefined && pz !== undefined;
-    if (inTransit && mv?.target) return {
-      x: mv.target.x, y: mv.target.y, z: mv.target.z,
-      isMoving: true,
-      px: hasPrior ? px : undefined, py: hasPrior ? py : undefined, pz: hasPrior ? pz : undefined,
-    };
+    if (inTransit && mv?.target)
+      return {
+        x: mv.target.x,
+        y: mv.target.y,
+        z: mv.target.z,
+        isMoving: true,
+        px: hasPrior ? px : undefined,
+        py: hasPrior ? py : undefined,
+        pz: hasPrior ? pz : undefined,
+      };
     const s = state?.probe?.sector ?? { x: 0, y: 0, z: 0 };
     return {
-      x: s.x, y: s.y, z: s.z, isMoving: false,
-      px: hasPrior ? px : undefined, py: hasPrior ? py : undefined, pz: hasPrior ? pz : undefined,
+      x: s.x,
+      y: s.y,
+      z: s.z,
+      isMoving: false,
+      px: hasPrior ? px : undefined,
+      py: hasPrior ? py : undefined,
+      pz: hasPrior ? pz : undefined,
     };
   }, [state]);
 
@@ -830,13 +1202,16 @@ export default function Commander() {
       </div>
       {/* Tab bar */}
       <div className="flex border border-border rounded overflow-hidden">
-        {TABS.map(tab => (
-          <button key={tab.id} onClick={() => setSideTab(tab.id)}
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setSideTab(tab.id)}
             className={`flex-1 py-1.5 px-0.5 text-[10px] tracking-wide whitespace-nowrap transition-all ${
               sideTab === tab.id
                 ? "bg-primary/20 text-primary"
                 : "text-muted-foreground hover:text-foreground"
-            }`}>
+            }`}
+          >
             {tab.label}
           </button>
         ))}
@@ -854,10 +1229,14 @@ export default function Commander() {
             onSelectProbe={setSelectedProbeId}
           />
         )}
-        {sideTab === "containers" && <ContainersPanel refetchSignal={logRefetch} />}
+        {sideTab === "containers" && (
+          <ContainersPanel refetchSignal={logRefetch} />
+        )}
         {sideTab === "sectors" && <SectorsPanel refetchSignal={logRefetch} />}
         {sideTab === "scout" && <ScoutPanel initialTarget={scoutTarget} />}
-        {sideTab === "scheduled" && <ScheduledPanel refetchSignal={logRefetch} />}
+        {sideTab === "scheduled" && (
+          <ScheduledPanel refetchSignal={logRefetch} />
+        )}
         {sideTab === "globe" && (
           <GlobeMap
             probeX={globeCenter.x}
@@ -901,13 +1280,19 @@ export default function Commander() {
           <div key={i}>
             {msg.role === "user" ? (
               <div className="flex gap-2 items-start">
-                <span className="text-accent text-xs shrink-0 mt-0.5 glow-cyan">OPERATOR›</span>
+                <span className="text-accent text-xs shrink-0 mt-0.5 glow-cyan">
+                  OPERATOR›
+                </span>
                 <span className="text-foreground text-sm">{msg.content}</span>
               </div>
             ) : (
               <div className="flex gap-2 items-start">
-                <span className="text-primary text-xs shrink-0 mt-0.5 glow-green">PROBE›</span>
-                <div className="flex-1"><AssistantBubble events={msg.events} /></div>
+                <span className="text-primary text-xs shrink-0 mt-0.5 glow-green">
+                  PROBE›
+                </span>
+                <div className="flex-1">
+                  <AssistantBubble events={msg.events} />
+                </div>
               </div>
             )}
           </div>
@@ -915,18 +1300,30 @@ export default function Commander() {
 
         {isRunning && (
           <div className="flex gap-2 items-start">
-            <span className="text-primary text-xs shrink-0 mt-0.5 glow-green pulse-active">PROBE›</span>
+            <span className="text-primary text-xs shrink-0 mt-0.5 glow-green pulse-active">
+              PROBE›
+            </span>
             <div className="flex-1">
               {liveEvents.length > 0 ? (
                 <div className="space-y-1.5 border border-border rounded p-3 bg-card/60 border-glow">
-                  {liveEvents.filter(e =>
-                    e.type === "message" || e.type === "action" || e.type === "result" ||
-                    e.type === "status" || e.type === "error"
-                  ).map((e, i) => <EventRow key={i} event={e} />)}
+                  {liveEvents
+                    .filter(
+                      (e) =>
+                        e.type === "message" ||
+                        e.type === "action" ||
+                        e.type === "result" ||
+                        e.type === "status" ||
+                        e.type === "error",
+                    )
+                    .map((e, i) => (
+                      <EventRow key={i} event={e} />
+                    ))}
                   <div className="text-xs text-primary cursor-blink" />
                 </div>
               ) : (
-                <span className="text-xs text-muted-foreground pulse-active">PROCESSING…</span>
+                <span className="text-xs text-muted-foreground pulse-active">
+                  PROCESSING…
+                </span>
               )}
             </div>
           </div>
@@ -938,17 +1335,28 @@ export default function Commander() {
         <div className="flex gap-3 items-end">
           <div className="flex-1">
             <div className="text-xs text-muted-foreground mb-1.5 tracking-widest">
-              COMMAND INPUT {isRunning && <span className="text-yellow-400 pulse-active">● EXECUTING</span>}
+              COMMAND INPUT{" "}
+              {isRunning && (
+                <span className="text-yellow-400 pulse-active">
+                  ● EXECUTING
+                </span>
+              )}
             </div>
             <textarea
-              value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown}
-              disabled={isRunning} rows={2}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={isRunning}
+              rows={2}
               placeholder="Tell your probe what to do… (Enter to send, Shift+Enter for newline)"
               className="w-full bg-transparent text-foreground text-sm placeholder:text-muted-foreground/40 resize-none outline-none font-mono"
             />
           </div>
-          <button onClick={sendCommand} disabled={isRunning || !input.trim()}
-            className="shrink-0 px-4 py-2 text-xs tracking-widest font-bold border rounded transition-all border-primary text-primary hover:bg-primary hover:text-primary-foreground disabled:opacity-30 disabled:cursor-not-allowed">
+          <button
+            onClick={sendCommand}
+            disabled={isRunning || !input.trim()}
+            className="shrink-0 px-4 py-2 text-xs tracking-widest font-bold border rounded transition-all border-primary text-primary hover:bg-primary hover:text-primary-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+          >
             {isRunning ? "…" : "EXECUTE"}
           </button>
         </div>
@@ -959,25 +1367,44 @@ export default function Commander() {
   return (
     <>
       <button
-        onClick={() => setFillWidth(v => !v)}
+        onClick={() => setFillWidth((v) => !v)}
         aria-pressed={fillWidth}
         aria-label={fillWidth ? "Constrain width" : "Fill window width"}
         title={fillWidth ? "Constrain width" : "Fill window width"}
         className="fixed top-2 right-2 z-50 p-1.5 border border-border rounded bg-card/60 text-muted-foreground transition-all hover:text-primary hover:border-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
-        {fillWidth ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+        {fillWidth ? (
+          <Minimize2 className="w-3.5 h-3.5" />
+        ) : (
+          <Maximize2 className="w-3.5 h-3.5" />
+        )}
       </button>
 
-      <div className={cn("min-h-screen p-4", !fillWidth && "max-w-7xl mx-auto")}>
+      <div
+        className={cn("min-h-screen p-4", !fillWidth && "max-w-7xl mx-auto")}
+      >
         {isDesktop ? (
           // Fixed height (p-4 = 2rem vertical) gives the group a resolved height for
           // its drag math; parent stays min-h-screen so the mobile stack can grow.
-          <ResizablePanelGroup direction="horizontal" autoSaveId="pc-panes" className="h-[calc(100vh-2rem)]">
-            <ResizablePanel defaultSize={22} minSize={18} maxSize={45} className="flex flex-col gap-2 min-h-0">
+          <ResizablePanelGroup
+            direction="horizontal"
+            autoSaveId="pc-panes"
+            className="h-[calc(100vh-2rem)]"
+          >
+            <ResizablePanel
+              defaultSize={22}
+              minSize={18}
+              maxSize={45}
+              className="flex flex-col gap-2 min-h-0"
+            >
               {leftContent}
             </ResizablePanel>
             <ResizableHandle withHandle className="mx-2" />
-            <ResizablePanel defaultSize={78} minSize={40} className="flex flex-col min-h-0">
+            <ResizablePanel
+              defaultSize={78}
+              minSize={40}
+              className="flex flex-col min-h-0"
+            >
               {rightContent}
             </ResizablePanel>
           </ResizablePanelGroup>

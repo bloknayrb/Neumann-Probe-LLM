@@ -15,6 +15,7 @@ import {
   cancelPendingAction,
   recordSector,
   getPendingActions,
+  getRecentTerminalActions,
   DATA_DIR,
 } from "./file-store.js";
 
@@ -77,8 +78,13 @@ function extractCoreState(probeResp: any, manniesResp: any, sectorResp: any) {
 
 router.get("/scheduled", async (_req, res) => {
   try {
-    const actions = await getPendingActions();
-    res.json({ actions });
+    const [actions, recent] = await Promise.all([
+      getPendingActions(),
+      getRecentTerminalActions(),
+    ]);
+    // `recent` = failed/cancelled/triggered rows, so a scheduled order that
+    // failed or was cancelled is visible instead of silently vanishing.
+    res.json({ actions, recent });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

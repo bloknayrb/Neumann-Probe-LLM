@@ -238,7 +238,20 @@ export function startPoller(): void {
   if (started) return;
   started = true;
   logger.info({ intervalMs: POLL_INTERVAL_MS }, "poller: started");
+  // Reentrancy guard: a tick that runs long (executeAction is a real game call)
+  // must not overlap the next one, or both could read the same pending row and
+  // fire it twice. A skipped tick just retries in POLL_INTERVAL_MS.
+  let ticking = false;
   setInterval(() => {
-    poll().catch((err) => logger.error({ err }, "poller: unexpected error"));
+    if (ticking) {
+      logger.info("poller: previous tick still running — skipping this one");
+      return;
+    }
+    ticking = true;
+    poll()
+      .catch((err) => logger.error({ err }, "poller: unexpected error"))
+      .finally(() => {
+        ticking = false;
+      });
   }, POLL_INTERVAL_MS);
 }
