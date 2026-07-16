@@ -14,7 +14,7 @@ let started = false;
 async function checkCondition(
   action: PendingAction,
   mannies: any[],
-  probe: any
+  probe: any,
 ): Promise<boolean> {
   const cond = action.condition;
   if (cond.type === "manny_idle") {
@@ -33,8 +33,12 @@ async function checkCondition(
       const allPresent = cond.requireItems.every((req) => itemTypes.has(req));
       if (!allPresent) {
         logger.info(
-          { actionId: action.id, requireItems: cond.requireItems, found: [...itemTypes] },
-          "poller: manny idle but required items not yet in inventory — waiting"
+          {
+            actionId: action.id,
+            requireItems: cond.requireItems,
+            found: [...itemTypes],
+          },
+          "poller: manny idle but required items not yet in inventory — waiting",
         );
         return false;
       }
@@ -110,7 +114,22 @@ export function toToolCall(a: PendingActionPayload): {
  */
 async function executeAction(action: PendingAction): Promise<void> {
   const { name, args } = toToolCall(action.action);
-  await runTool(name, args, { confirm: true });
+  const result = await runTool(name, args, { confirm: true });
+
+  // runTool REFUSES by returning, not by throwing. Our caller reads a clean
+  // return as success and stamps the row "triggered" — so a refusal that slips
+  // through here would be logged as "action triggered successfully" while
+  // nothing happened. `confirm: true` means this is currently unreachable;
+  // it's here so that if that ever stops being true, it fails loudly.
+  if (
+    result &&
+    typeof result === "object" &&
+    (result as { requiresConfirmation?: unknown }).requiresConfirmation === true
+  ) {
+    throw new Error(
+      `runTool refused ${name} despite confirm:true — scheduled action not executed`,
+    );
+  }
 }
 
 /** Return the manny ID that an action will occupy, if any. */
@@ -157,14 +176,14 @@ async function poll(): Promise<void> {
     if (mannyId && claimedMannies.has(mannyId)) {
       logger.info(
         { actionId: action.id, mannyId },
-        "poller: manny already claimed this cycle — deferring to next tick"
+        "poller: manny already claimed this cycle — deferring to next tick",
       );
       continue;
     }
     if (action.action.type === "move_probe" && probeMoveClaimed) {
       logger.info(
         { actionId: action.id },
-        "poller: probe move already claimed this cycle — deferring"
+        "poller: probe move already claimed this cycle — deferring",
       );
       continue;
     }
@@ -173,7 +192,10 @@ async function poll(): Promise<void> {
     try {
       conditionMet = await checkCondition(action, mannies, probe);
     } catch (err) {
-      logger.warn({ err, actionId: action.id }, "poller: condition check error");
+      logger.warn(
+        { err, actionId: action.id },
+        "poller: condition check error",
+      );
       continue;
     }
 
@@ -181,20 +203,26 @@ async function poll(): Promise<void> {
 
     logger.info(
       { actionId: action.id, description: action.description },
-      "poller: condition met — executing action"
+      "poller: condition met — executing action",
     );
 
     try {
       await executeAction(action);
       await resolvePendingAction(action.id, { status: "triggered" });
-      logger.info({ actionId: action.id }, "poller: action triggered successfully");
+      logger.info(
+        { actionId: action.id },
+        "poller: action triggered successfully",
+      );
 
       // Mark the resource as claimed so subsequent actions skip this cycle
       if (mannyId) claimedMannies.add(mannyId);
       if (action.action.type === "move_probe") probeMoveClaimed = true;
     } catch (err: any) {
       const msg = err?.message ?? String(err);
-      logger.error({ actionId: action.id, err: msg }, "poller: action execution failed");
+      logger.error(
+        { actionId: action.id, err: msg },
+        "poller: action execution failed",
+      );
       await resolvePendingAction(action.id, { status: "failed", error: msg });
     }
   }
