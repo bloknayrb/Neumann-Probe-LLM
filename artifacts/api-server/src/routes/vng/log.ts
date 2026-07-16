@@ -5,7 +5,12 @@ import {
   updateContainerStatus,
   recordSector,
 } from "./file-store.js";
-import { getProbe, getSector, scanSector, getVisitedSectors } from "./client.js";
+import {
+  getProbe,
+  getSector,
+  scanSector,
+  getVisitedSectors,
+} from "./client.js";
 import { mapSectorObjects, sectorResourceSummary } from "./sector-map.js";
 
 const router = Router();
@@ -40,29 +45,44 @@ router.get("/containers", async (_req, res) => {
     ]);
 
     // Build contents map: inventoryContainerId → [{ resource, amount }]
-    const contentsByContainerId = new Map<string, { resource: string; amount: number }[]>();
-    const resourceStocks: any[] = probeResp?.probe?.inventory?.resourceStocks ?? [];
+    const contentsByContainerId = new Map<
+      string,
+      { resource: string; amount: number }[]
+    >();
+    const resourceStocks: any[] =
+      probeResp?.probe?.inventory?.resourceStocks ?? [];
     for (const stock of resourceStocks) {
       for (const entry of stock.containers ?? []) {
         const cid: string = entry.container?.id;
         if (!cid) continue;
         if (!contentsByContainerId.has(cid)) contentsByContainerId.set(cid, []);
-        contentsByContainerId.get(cid)!.push({ resource: stock.type, amount: entry.amount });
+        contentsByContainerId
+          .get(cid)!
+          .push({ resource: stock.type, amount: entry.amount });
       }
     }
 
     // Build capacity map from probe inventory containers list
-    const capacityByInventoryId = new Map<string, { used: number; total: number }>();
+    const capacityByInventoryId = new Map<
+      string,
+      { used: number; total: number }
+    >();
     for (const c of probeResp?.probe?.inventory?.containers ?? []) {
-      capacityByInventoryId.set(c.id, { used: c.usedCapacity ?? 0, total: c.capacity ?? 1 });
+      capacityByInventoryId.set(c.id, {
+        used: c.usedCapacity ?? 0,
+        total: c.capacity ?? 1,
+      });
     }
 
     // File-store lookup by sectorObjectId for metadata
-    const fileByObjId = new Map(fileContainers.map((c: any) => [c.sectorObjectId, c]));
+    const fileByObjId = new Map(
+      fileContainers.map((c: any) => [c.sectorObjectId, c]),
+    );
 
     // On-board containers (attached to probe): kind === "container" in inventory
-    const inventoryContainers: any[] = (probeResp?.probe?.inventory?.containers ?? [])
-      .filter((c: any) => c.kind === "container");
+    const inventoryContainers: any[] = (
+      probeResp?.probe?.inventory?.containers ?? []
+    ).filter((c: any) => c.kind === "container");
 
     const onboard = inventoryContainers.map((c: any) => ({
       id: c.id,
@@ -76,8 +96,14 @@ router.get("/containers", async (_req, res) => {
 
     // Probe hull storage: total inventory minus the sum of attached container capacities
     const inv = probeResp?.probe?.inventory ?? {};
-    const containerCapacityTotal = inventoryContainers.reduce((s: number, c: any) => s + (c.capacity ?? 0), 0);
-    const containerUsedTotal = inventoryContainers.reduce((s: number, c: any) => s + (c.usedCapacity ?? 0), 0);
+    const containerCapacityTotal = inventoryContainers.reduce(
+      (s: number, c: any) => s + (c.capacity ?? 0),
+      0,
+    );
+    const containerUsedTotal = inventoryContainers.reduce(
+      (s: number, c: any) => s + (c.usedCapacity ?? 0),
+      0,
+    );
     const hullCapacity = (inv.capacity ?? 0) - containerCapacityTotal;
     const hullUsed = (inv.usedCapacity ?? 0) - containerUsedTotal;
 
@@ -89,14 +115,21 @@ router.get("/containers", async (_req, res) => {
         .filter((e: any) => containerIdSet.has(e.container?.id))
         .reduce((s: number, e: any) => s + (e.amount ?? 0), 0);
       const inHull = (stock.amount ?? 0) - inContainers;
-      if (inHull > 0.0005) hullContents.push({ resource: stock.type ?? stock.name, amount: inHull });
+      if (inHull > 0.0005)
+        hullContents.push({
+          resource: stock.type ?? stock.name,
+          amount: inHull,
+        });
     }
 
     // Inventory items stored in the hull (non-manny, non-printer)
     const inventoryItems: any[] = inv.items ?? [];
     const hullItems = inventoryItems
       .filter((i: any) => i.type !== "manny" && i.type !== "atomic_3d_printer")
-      .map((i: any) => ({ name: i.label ?? i.name ?? i.type ?? i.id, type: i.type ?? "" }));
+      .map((i: any) => ({
+        name: i.label ?? i.name ?? i.type ?? i.id,
+        type: i.type ?? "",
+      }));
 
     const probeStorage = {
       capacity: hullCapacity,
@@ -108,7 +141,9 @@ router.get("/containers", async (_req, res) => {
 
     // Floating containers: live sector detached_container objects
     const sectorObjects: any[] = sectorResp?.sector?.objects ?? [];
-    const sectorDetached = sectorObjects.filter((o: any) => o.type === "detached_container");
+    const sectorDetached = sectorObjects.filter(
+      (o: any) => o.type === "detached_container",
+    );
 
     const floating = sectorDetached.map((o: any) => {
       const inventoryId = o.id.replace(/^detached-container-/, "");
@@ -158,7 +193,10 @@ router.get("/sectors", async (_req, res) => {
     // Local JSON supplements with scanned objects.
     const [gameResp, localSectors] = await Promise.all([
       getVisitedSectors().catch(() => null),
-      getSectors().catch(() => []),
+      getSectors().catch((e) => {
+        console.error("[getSectors /sectors]", e);
+        return [];
+      }),
     ]);
 
     // Build local lookup by "x,y,z" key for objects
@@ -200,7 +238,7 @@ router.get("/sectors", async (_req, res) => {
     sectors.sort(
       (a, b) =>
         new Date(b.lastVisitedAt).getTime() -
-        new Date(a.lastVisitedAt).getTime()
+        new Date(a.lastVisitedAt).getTime(),
     );
 
     res.json({ sectors });
@@ -236,7 +274,7 @@ router.post("/sectors/refresh", async (_req, res) => {
         const resourceSummary = sectorResourceSummary(rawObjects);
         await recordSector(x, y, z, rawObjects);
         return { x, y, z, objectCount: objects.length, resourceSummary };
-      })
+      }),
     );
 
     const succeeded = results
@@ -261,7 +299,9 @@ router.get("/scout", async (req, res) => {
       return;
     }
     if ((x + y + z) % 2 !== 0) {
-      res.status(400).json({ error: "x + y + z must be even (game constraint)" });
+      res
+        .status(400)
+        .json({ error: "x + y + z must be even (game constraint)" });
       return;
     }
 
@@ -273,14 +313,18 @@ router.get("/scout", async (req, res) => {
 
     res.json({ x, y, z, objects, resourceSummary });
   } catch (err: any) {
-    console.error(`[scout] failed for (${req.query.x},${req.query.y},${req.query.z}):`, err.message);
+    console.error(
+      `[scout] failed for (${req.query.x},${req.query.y},${req.query.z}):`,
+      err.message,
+    );
     // VNG rate-limits remote scans until the probe has sufficient dwell data —
     // surface this as a soft unavailability rather than a hard error.
     if (
       err.message.includes("not collected enough data") ||
       err.message.includes("Insufficient data collection time")
     ) {
-      const retryIn = err.message.match(/Try again in (.+?)\.?\s*$/)?.[1] ?? null;
+      const retryIn =
+        err.message.match(/Try again in (.+?)\.?\s*$/)?.[1] ?? null;
       res.json({ unavailable: true, retryIn });
       return;
     }

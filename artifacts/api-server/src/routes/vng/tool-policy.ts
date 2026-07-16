@@ -31,6 +31,7 @@ export const SAFE = new Set<string>([
   "rename_manny",
   "deploy_manny",
   "recover_container",
+  "refill_deuterium_tank",
   "schedule_action",
   "cancel_scheduled_action",
 ]);
@@ -48,22 +49,28 @@ export const IRREVERSIBLE = new Set<string>([
   "salvage_object",
   "recall_manny",
   "drop_manny_cargo",
+  // Reviewed 2026-07-16 against openapi.yaml (see UNREVIEWED note for the ones held):
+  "assemble_probe", // consumes a relay + engine + 5 motors; no documented refund, no un-assemble
+  "send_message", // reaches other players' probes and inhabited planets; no unsend endpoint exists
+  "transfer_deuterium", // targetProbeId is constrained only to "same sector" — no ownership check,
+  //                       so this can hand your fuel reserve to another player's probe
 ]);
 
 /**
- * Tools nobody has ruled on yet. They behave exactly like IRREVERSIBLE (gated,
- * never exposed to the brain) — the separate set records that this is an absence
- * of a decision, not a decision. Move entries into SAFE or IRREVERSIBLE as they
- * get reviewed; the goal is for this set to reach empty.
+ * Reviewed, mechanically reversible-ish, but deliberately HELD out of SAFE — the
+ * brain still can't call them and `runTool` still gates them. These are not
+ * "undecided"; each is held for a specific reason that isn't pure reversibility,
+ * and any of them could be promoted to SAFE later if the operator chooses to
+ * widen the brain's reach. A tool that lands here by default (e.g. an upstream
+ * addition caught by assertPolicyCoversTools) IS undecided until someone rules.
  */
 export const UNREVIEWED = new Set<string>([
-  "assemble_probe",
-  "improve_probe",
-  "install_waypoint_bookmark",
-  "refill_deuterium_tank",
-  "send_message",
-  "transfer_deuterium",
-  "turn_on_relay",
+  "improve_probe", // strict upgrade with a documented refund, BUT the only cancel path is
+  //                  recall_manny (gated), so the brain couldn't undo it itself
+  "turn_on_relay", // becomes permanent SCUT infrastructure; there is no turn-off endpoint, and
+  //                  joining networks can absorb/rename an existing one
+  "install_waypoint_bookmark", // permanent, un-deletable public beacon carrying the player name —
+  //                              an OPSEC hold, not a reversibility one
 ]);
 
 /** Tools the MCP server exposes to the brain. Everything else is unreachable. */
@@ -92,11 +99,22 @@ export function assertPolicyCoversTools(): void {
 
   const unclassified = [...defined].filter((n) => !classified.includes(n));
   const orphaned = classified.filter((n) => !defined.has(n));
+  // The sets must be pairwise disjoint. Gating is decided by SAFE.has(name), so a
+  // tool that landed in BOTH SAFE and IRREVERSIBLE (e.g. a bad merge) would be
+  // exposed to the brain and run un-gated while coverage/orphan checks stay green —
+  // the one miscategorization that resolves toward the DANGEROUS direction.
+  const counts = new Map<string, number>();
+  for (const n of classified) counts.set(n, (counts.get(n) ?? 0) + 1);
+  const overlapping = [...counts].filter(([, c]) => c > 1).map(([n]) => n);
   const problems: string[] = [];
   if (unclassified.length)
     problems.push(`tools with no policy entry: ${unclassified.join(", ")}`);
   if (orphaned.length)
     problems.push(`policy entries with no such tool: ${orphaned.join(", ")}`);
+  if (overlapping.length)
+    problems.push(
+      `tools classified in more than one set (a SAFE overlap runs un-gated): ${overlapping.join(", ")}`,
+    );
   if (problems.length)
     throw new Error(
       `tool-policy is out of sync with tools.ts — ${problems.join("; ")}`,

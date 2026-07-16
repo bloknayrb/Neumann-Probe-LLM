@@ -1,5 +1,11 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { randomUUID } from "node:crypto";
+
+// NOTE: do NOT import the pino logger here. This module is in the MCP
+// subprocess's import graph, and pino writes to stdout — which is that
+// subprocess's JSON-RPC channel — and is deliberately excluded from the
+// neumann-mcp.mjs bundle. Log with console.error (stderr) only.
 
 // Checked most-specific first:
 //   VNG_DATA_DIR — set by /command on the stdio MCP subprocess, which the Claude
@@ -11,24 +17,249 @@ export const DATA_DIR = dataDirEnv
   ? path.resolve(dataDirEnv)
   : path.resolve(process.cwd(), "data");
 
+/** A data file could not be read or written safely. Distinct from ENOENT, which
+ *  is treated as "empty" rather than an error. */
+export class FileStoreError extends Error {
+  constructor(
+    message: string,
+    readonly file: string,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = "FileStoreError";
+  }
+}
+
+const TRANSIENT = new Set(["EBUSY", "EPERM", "EACCES"]);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function ensureDir() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 }
 
-async function readFile<T>(name: string, fallback: T): Promise<T> {
-  const file = path.join(DATA_DIR, name);
-  try {
-    const raw = await fs.readFile(file, "utf8");
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
+/**
+ * Retry an fs op through a transient Windows lock (AV / Search indexer holding
+ * the handle), then re-throw the original error. The read and write paths share
+ * this so their fault tolerance — the attempt cap and backoff curve — can't
+ * silently drift apart. It deliberately does NOT classify or wrap: the caller
+ * decides what a non-transient failure means (ENOENT → empty for reads, a hard
+ * error for writes).
+ */
+async function retryTransient<T>(op: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await op();
+    } catch (err: any) {
+      if (TRANSIENT.has(err?.code) && attempt < 4) {
+        await sleep(20 * (attempt + 1));
+        continue;
+      }
+      throw err;
+    }
   }
 }
 
-async function writeFile<T>(name: string, data: T): Promise<void> {
-  await ensureDir();
+/**
+ * Read a file's raw bytes. Returns null ONLY for ENOENT (legitimately absent).
+ * A transient Windows lock is retried; anything still failing throws rather than
+ * masquerading as absent. This is the fail-closed foundation: a read we couldn't
+ * complete must never be mistaken for an empty file, or the next write would
+ * erase real data.
+ */
+async function readRaw(name: string): Promise<string | null> {
   const file = path.join(DATA_DIR, name);
-  await fs.writeFile(file, JSON.stringify(data, null, 2), "utf8");
+  try {
+    return await retryTransient(() => fs.readFile(file, "utf8"));
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return null;
+    throw new FileStoreError(`cannot read ${name} (${err?.code})`, file, err);
+  }
+}
+
+/** Parse raw JSON array bytes. null (ENOENT) → the empty value. A parse error or
+ *  a non-array throws — a corrupt file is never silently coerced to []. */
+function parseRows<T>(name: string, raw: string | null, empty: T): T {
+  if (raw === null) return empty;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new FileStoreError(
+      `${name} is not valid JSON — refusing to read; file left untouched`,
+      path.join(DATA_DIR, name),
+      err,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new FileStoreError(
+      `${name} is not a JSON array (got ${parsed === null ? "null" : typeof parsed})`,
+      path.join(DATA_DIR, name),
+    );
+  }
+  return parsed as T;
+}
+
+/** Read + parse in one step (pure readers). Fail-closed per readRaw/parseRows. */
+async function readJson<T>(name: string, empty: T): Promise<T> {
+  return parseRows(name, await readRaw(name), empty);
+}
+
+/**
+ * Durable replace: serialize, write to a unique temp in the same dir, fsync,
+ * then atomically rename over the target. A crash or concurrent read can never
+ * observe a partial file — the failure mode that has already destroyed sector
+ * history in this project once. The uuid keeps two writers (this process's own
+ * concurrency, or the MCP subprocess) from colliding on the temp itself.
+ */
+async function writeJson<T>(name: string, data: T): Promise<void> {
+  const body = JSON.stringify(data, null, 2);
+  // No ensureDir here: the only caller is mutateFile, inside withCrossProcessLock,
+  // which has already created the dir to place its lock file.
+  const file = path.join(DATA_DIR, name);
+  const tmp = path.join(
+    DATA_DIR,
+    `.${name}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`,
+  );
+  try {
+    const fh = await fs.open(tmp, "wx");
+    try {
+      await fh.writeFile(body, "utf8");
+      await fh.sync();
+    } finally {
+      await fh.close(); // must close before rename on Windows
+    }
+    try {
+      await retryTransient(() => fs.rename(tmp, file));
+    } catch (err: any) {
+      throw new FileStoreError(
+        `cannot replace ${name} (${err?.code})`,
+        file,
+        err,
+      );
+    }
+  } finally {
+    await fs.unlink(tmp).catch(() => {}); // never leave a temp behind
+  }
+}
+
+// Per-file promise chain. Serializes read-modify-write cycles WITHIN this
+// process — e.g. the ~16 concurrent recordSector calls the /sectors/refresh
+// button fans out — so same-process callers never even contend for the
+// cross-process lock below. This alone is not enough: the api-server and the
+// spawned MCP subprocess write the same files from two OS processes.
+const chains = new Map<string, Promise<unknown>>();
+function withFileLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  const prev = chains.get(name) ?? Promise.resolve();
+  const next = prev.then(fn, fn); // run fn regardless of the predecessor's fate
+  chains.set(
+    name,
+    next.then(
+      () => {},
+      () => {},
+    ),
+  ); // a rejection must not poison the queue
+  return next;
+}
+
+const LOCK_STALE_MS = 10_000; // a read-modify-write of a local file is milliseconds
+const LOCK_WAIT_MS = 15_000; // give up rather than hang a request forever
+
+/**
+ * Cross-process mutual exclusion for one data file, via an O_EXCL lock file.
+ * Held only across a read-modify-write (never across a game API call), so the
+ * critical section is milliseconds. A process killed mid-write (the MCP
+ * subprocess is routinely killed on command completion) can orphan the lock; the
+ * staleness check reclaims it atomically (via rename) so two racing reclaimers
+ * can't both take it. The stale window (>10s) is far longer than any real
+ * local-file RMW, so a still-live holder is never seen as stale.
+ */
+async function withCrossProcessLock<T>(
+  name: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  await ensureDir();
+  const lock = path.join(DATA_DIR, `.${name}.lock`);
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const fh = await fs.open(lock, "wx"); // atomic exclusive create
+      try {
+        await fh.writeFile(String(process.pid));
+      } finally {
+        await fh.close();
+      }
+      break;
+    } catch (err: any) {
+      if (err?.code !== "EEXIST") {
+        throw new FileStoreError(
+          `cannot lock ${name} (${err?.code})`,
+          lock,
+          err,
+        );
+      }
+      // Held by someone. Reclaim if the holder died and left it stale — but do it
+      // atomically: rename the orphan to a per-pid name so only ONE racer can win.
+      // A blind unlink here lets two processes both "reclaim" the same orphan and
+      // both enter the critical section (the second unlink would delete the first's
+      // freshly-created lock). The rename winner removes it; the loser's rename
+      // fails (source already gone) and it simply retries open(wx).
+      const st = await fs.stat(lock).catch(() => null);
+      if (st && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+        const claimed = `${lock}.stale.${process.pid}`;
+        try {
+          await fs.rename(lock, claimed);
+          await fs.unlink(claimed).catch(() => {});
+        } catch {
+          // Lost the reclaim race — another process already renamed/removed it.
+        }
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new FileStoreError(`timed out waiting for lock on ${name}`, lock);
+      }
+      // Small, pid-staggered backoff to avoid two processes lockstepping.
+      await sleep(10 + (process.pid % 25));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await fs.unlink(lock).catch(() => {});
+  }
+}
+
+/**
+ * Read-modify-write a JSON array file safely. `mutate` gets the current rows and
+ * returns the caller's result plus whether to persist.
+ *
+ * `withFileLock` serializes cycles within this process; `withCrossProcessLock`
+ * serializes them against the other process. Together they make the whole
+ * read-modify-write atomic across both writers — which is what stops a poller
+ * `resolve` and an MCP `schedule_action` from clobbering or resurrecting each
+ * other's rows in pending-actions.json (a lost update there is a silently
+ * re-fired or dropped action, not a cosmetic miss).
+ */
+async function mutateFile<T, R>(
+  name: string,
+  empty: T,
+  mutate: (data: T) => { result: R; write: boolean },
+): Promise<R> {
+  return withFileLock(name, () =>
+    withCrossProcessLock(name, async () => {
+      const data = await readJson(name, empty);
+      const { result, write } = mutate(data);
+      if (write) await writeJson(name, data);
+      return result;
+    }),
+  );
+}
+
+/** Monotonic next id. Never reuses an id even after a row is removed, and avoids
+ *  Math.max(...) spread pitfalls (NaN from a malformed row, huge-array RangeError). */
+function nextId(rows: readonly { id: number }[]): number {
+  let max = 0;
+  for (const r of rows) if (Number.isInteger(r.id) && r.id > max) max = r.id;
+  return max + 1;
 }
 
 export type DetachedContainer = {
@@ -102,7 +333,17 @@ export type PendingAction = {
   createdAt: string;
   condition: PendingCondition;
   action: PendingActionPayload;
-  status: "pending" | "triggered" | "failed";
+  // Which probe this action targets; null = the operator's main probe. Optional
+  // ON DISK — the rows written before multi-probe have no such key, and a missing
+  // key provably means "main" (they predate any second probe). The poller
+  // coalesces `?? null`. It is REQUIRED at the addPendingAction call site (see
+  // its signature) so the schedule_action handler can't silently drop the probe
+  // it's scoped to — an upstream regen that omits the arg fails tsc here.
+  probeId?: number | null;
+  // "cancelled" is a terminal status, not a row removal — see cancelPendingAction.
+  status: "pending" | "triggered" | "failed" | "cancelled";
+  // Terminal-resolution timestamp — set when a row moves to triggered, failed, OR
+  // cancelled (despite the name, not success-only). Drives recent-view ordering.
   triggeredAt?: string;
   error?: string;
 };
@@ -110,46 +351,104 @@ export type PendingAction = {
 const PENDING_FILE = "pending-actions.json";
 
 export async function getPendingActions(): Promise<PendingAction[]> {
-  const all = await readFile<PendingAction[]>(PENDING_FILE, []);
+  const all = await readJson<PendingAction[]>(PENDING_FILE, []);
   return all.filter((a) => a.status === "pending");
 }
 
+/**
+ * The whole scheduled-actions view in ONE read: the pending queue plus the most
+ * recent terminal rows (triggered / failed / cancelled, newest first) so the
+ * operator can see an order that failed or was cancelled instead of it silently
+ * vanishing. Reading the file once — rather than a pending read plus a separate
+ * recent read — halves the I/O on this frontend-polled endpoint and guarantees
+ * the two lists are a consistent snapshot: a row can't flip status mid-read and
+ * appear in both or neither.
+ */
+export async function getScheduledView(
+  recentLimit = 20,
+): Promise<{ pending: PendingAction[]; recent: PendingAction[] }> {
+  const all = await readJson<PendingAction[]>(PENDING_FILE, []);
+  const pending = all.filter((a) => a.status === "pending");
+  const recent = all
+    .filter((a) => a.status !== "pending")
+    // Fall back to createdAt so a terminal row without a resolution stamp (e.g. a
+    // legacy row) still sorts chronologically instead of to the bottom on "".
+    .sort((a, b) =>
+      (b.triggeredAt ?? b.createdAt ?? "").localeCompare(
+        a.triggeredAt ?? a.createdAt ?? "",
+      ),
+    )
+    .slice(0, recentLimit);
+  return { pending, recent };
+}
+
 export async function addPendingAction(
-  entry: Omit<PendingAction, "id" | "createdAt" | "status">,
+  // probeId is optional on the type (legacy rows lack it) but REQUIRED here: the
+  // intersection re-adds it as a mandatory field the derived Omit would have left
+  // optional. This is the tripwire — a caller (or an upstream-regenerated
+  // schedule_action handler) that forgets to pass the probe it's scoped to won't
+  // compile, rather than silently scheduling every probe's work onto the main one.
+  entry: Omit<PendingAction, "id" | "createdAt" | "status" | "probeId"> & {
+    probeId: number | null;
+  },
 ): Promise<PendingAction> {
-  const rows = await readFile<PendingAction[]>(PENDING_FILE, []);
-  const newRow: PendingAction = {
-    ...entry,
-    id: rows.length > 0 ? Math.max(...rows.map((r) => r.id)) + 1 : 1,
-    createdAt: new Date().toISOString(),
-    status: "pending",
-  };
-  rows.push(newRow);
-  await writeFile(PENDING_FILE, rows);
-  return newRow;
+  return mutateFile<PendingAction[], PendingAction>(
+    PENDING_FILE,
+    [],
+    (rows) => {
+      const newRow: PendingAction = {
+        ...entry,
+        id: nextId(rows),
+        createdAt: new Date().toISOString(),
+        status: "pending",
+      };
+      rows.push(newRow);
+      return { result: newRow, write: true };
+    },
+  );
 }
 
 export async function resolvePendingAction(
   id: number,
   result: { status: "triggered" | "failed"; error?: string },
 ): Promise<void> {
-  const rows = await readFile<PendingAction[]>(PENDING_FILE, []);
-  const idx = rows.findIndex((r) => r.id === id);
-  if (idx !== -1) {
+  return mutateFile<PendingAction[], void>(PENDING_FILE, [], (rows) => {
+    const idx = rows.findIndex((r) => r.id === id);
+    // Only a still-pending row may be resolved. Refusing a terminal row stops a
+    // cross-process resurrection (or a stale caller) from stamping "triggered"
+    // onto a row that was already cancelled or resolved.
+    if (idx === -1 || rows[idx].status !== "pending") {
+      // Log both cases: a terminal-status refusal AND an unknown id. Since rows are
+      // never spliced (cancel sets a status), an unknown id is genuinely anomalous
+      // and worth a trace rather than a silent no-op.
+      console.error(
+        idx === -1
+          ? `[file-store] refusing to resolve action ${id}: not found`
+          : `[file-store] refusing to resolve action ${id}: status=${rows[idx].status}`,
+      );
+      return { result: undefined, write: false };
+    }
     rows[idx].status = result.status;
     rows[idx].triggeredAt = new Date().toISOString();
     if (result.error) rows[idx].error = result.error;
-    await writeFile(PENDING_FILE, rows);
-  }
+    return { result: undefined, write: true };
+  });
 }
 
 export async function cancelPendingAction(id: number): Promise<boolean> {
-  const rows = await readFile<PendingAction[]>(PENDING_FILE, []);
-  const idx = rows.findIndex((r) => r.id === id && r.status === "pending");
-  if (idx === -1) return false;
-  rows.splice(idx, 1);
-  await writeFile(PENDING_FILE, rows);
-  return true;
+  return mutateFile<PendingAction[], boolean>(PENDING_FILE, [], (rows) => {
+    const idx = rows.findIndex((r) => r.id === id && r.status === "pending");
+    if (idx === -1) return { result: false, write: false };
+    // Terminal status, NOT a splice: removing the row would let nextId reuse its
+    // id, so a stale cancel/resolve could later hit a different action.
+    rows[idx].status = "cancelled";
+    // Stamp the terminal time so the row sorts into getScheduledView's `recent` by
+    // when it resolved. Without it, cancelled rows sort to the bottom on "" and are
+    // the first evicted by the slice — i.e. they silently vanish, the very thing
+    // that view exists to prevent.
+    rows[idx].triggeredAt = new Date().toISOString();
+    return { result: true, write: true };
+  });
 }
 
 /**
@@ -162,6 +461,10 @@ export async function cancelPendingAction(id: number): Promise<boolean> {
  * it rather than growing a second, staler copy in this file.
  */
 export type VisitedSector = {
+  // A display/order handle only — every lookup and the recordSector upsert match
+  // on (sectorX, sectorY, sectorZ), never on id. So the one duplicate id:7 in the
+  // live file (a leftover from the f46fc89 text-merge of two tracked JSON arrays,
+  // NOT a runtime race) is inert; renumbering isn't worth a backup + downtime.
   id: number;
   sectorX: number;
   sectorY: number;
@@ -182,34 +485,38 @@ export function toSectorObjectId(containerId: string): string {
 }
 
 export async function getContainers(): Promise<DetachedContainer[]> {
-  return readFile<DetachedContainer[]>(CONTAINERS_FILE, []);
+  return readJson<DetachedContainer[]>(CONTAINERS_FILE, []);
 }
 
 export async function addContainer(
   entry: Omit<DetachedContainer, "id" | "detachedAt">,
 ): Promise<DetachedContainer> {
-  const rows = await getContainers();
-  const newRow: DetachedContainer = {
-    ...entry,
-    id: rows.length > 0 ? Math.max(...rows.map((r) => r.id)) + 1 : 1,
-    detachedAt: new Date().toISOString(),
-  };
-  rows.push(newRow);
-  await writeFile(CONTAINERS_FILE, rows);
-  return newRow;
+  return mutateFile<DetachedContainer[], DetachedContainer>(
+    CONTAINERS_FILE,
+    [],
+    (rows) => {
+      const newRow: DetachedContainer = {
+        ...entry,
+        id: nextId(rows),
+        detachedAt: new Date().toISOString(),
+      };
+      rows.push(newRow);
+      return { result: newRow, write: true };
+    },
+  );
 }
 
 export async function updateContainerStatus(
   id: number,
   update: { status?: string; notes?: string },
 ): Promise<void> {
-  const rows = await getContainers();
-  const idx = rows.findIndex((r) => r.id === id);
-  if (idx !== -1) {
+  return mutateFile<DetachedContainer[], void>(CONTAINERS_FILE, [], (rows) => {
+    const idx = rows.findIndex((r) => r.id === id);
+    if (idx === -1) return { result: undefined, write: false };
     if (update.status) rows[idx].status = update.status as any;
     if (update.notes !== undefined) rows[idx].notes = update.notes;
-    await writeFile(CONTAINERS_FILE, rows);
-  }
+    return { result: undefined, write: true };
+  });
 }
 
 export async function updateContainerAnchor(
@@ -217,13 +524,13 @@ export async function updateContainerAnchor(
   anchorObjectId: string,
   anchorObjectName: string | null,
 ): Promise<void> {
-  const rows = await getContainers();
-  const idx = rows.findIndex((r) => r.id === id);
-  if (idx !== -1) {
+  return mutateFile<DetachedContainer[], void>(CONTAINERS_FILE, [], (rows) => {
+    const idx = rows.findIndex((r) => r.id === id);
+    if (idx === -1) return { result: undefined, write: false };
     rows[idx].anchorObjectId = anchorObjectId;
     rows[idx].anchorObjectName = anchorObjectName;
-    await writeFile(CONTAINERS_FILE, rows);
-  }
+    return { result: undefined, write: true };
+  });
 }
 
 /**
@@ -231,18 +538,19 @@ export async function updateContainerAnchor(
  * then falls back to containerId (since the recovery tool uses the sector object ID).
  */
 export async function markContainerRecovered(objectId: string): Promise<void> {
-  const rows = await getContainers();
-  let changed = false;
-  for (const row of rows) {
-    if (
-      row.status === "floating" &&
-      (row.sectorObjectId === objectId || row.containerId === objectId)
-    ) {
-      row.status = "recovered";
-      changed = true;
+  return mutateFile<DetachedContainer[], void>(CONTAINERS_FILE, [], (rows) => {
+    let changed = false;
+    for (const row of rows) {
+      if (
+        row.status === "floating" &&
+        (row.sectorObjectId === objectId || row.containerId === objectId)
+      ) {
+        row.status = "recovered";
+        changed = true;
+      }
     }
-  }
-  if (changed) await writeFile(CONTAINERS_FILE, rows);
+    return { result: undefined, write: changed };
+  });
 }
 
 export async function getFloatingContainers(
@@ -261,7 +569,7 @@ export async function getFloatingContainers(
 }
 
 export async function getSectors(): Promise<VisitedSector[]> {
-  return readFile<VisitedSector[]>(SECTORS_FILE, []);
+  return readJson<VisitedSector[]>(SECTORS_FILE, []);
 }
 
 /**
@@ -365,32 +673,31 @@ export async function recordSector(
     return base;
   });
 
-  const rows = await getSectors();
-  const idx = rows.findIndex(
-    (r) => r.sectorX === x && r.sectorY === y && r.sectorZ === z,
-  );
-
   const now = new Date().toISOString();
 
-  if (idx !== -1) {
-    const row = rows[idx];
-    row.objects = simplified;
-    row.resourceSummary = resourceSummary;
-    row.lastVisitedAt = now;
-    row.visitCount += 1;
-  } else {
-    const row: VisitedSector = {
-      id: rows.length > 0 ? Math.max(...rows.map((r) => r.id)) + 1 : 1,
-      sectorX: x,
-      sectorY: y,
-      sectorZ: z,
-      firstVisitedAt: now,
-      lastVisitedAt: now,
-      visitCount: 1,
-      objects: simplified,
-      resourceSummary,
-    };
-    rows.push(row);
-  }
-  await writeFile(SECTORS_FILE, rows);
+  return mutateFile<VisitedSector[], void>(SECTORS_FILE, [], (rows) => {
+    const idx = rows.findIndex(
+      (r) => r.sectorX === x && r.sectorY === y && r.sectorZ === z,
+    );
+    if (idx !== -1) {
+      const row = rows[idx];
+      row.objects = simplified;
+      row.resourceSummary = resourceSummary;
+      row.lastVisitedAt = now;
+      row.visitCount += 1;
+    } else {
+      rows.push({
+        id: nextId(rows),
+        sectorX: x,
+        sectorY: y,
+        sectorZ: z,
+        firstVisitedAt: now,
+        lastVisitedAt: now,
+        visitCount: 1,
+        objects: simplified,
+        resourceSummary,
+      });
+    }
+    return { result: undefined, write: true };
+  });
 }
