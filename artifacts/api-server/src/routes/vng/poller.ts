@@ -292,7 +292,9 @@ async function poll(): Promise<void> {
   const byProbe = new Map<number | null, PendingAction[]>();
   for (const action of pending) {
     const pid = action.probeId ?? null;
-    (byProbe.get(pid) ?? byProbe.set(pid, []).get(pid)!).push(action);
+    let bucket = byProbe.get(pid);
+    if (!bucket) byProbe.set(pid, (bucket = []));
+    bucket.push(action);
   }
 
   // Each probe fetches and fires independently; allSettled so one probe's

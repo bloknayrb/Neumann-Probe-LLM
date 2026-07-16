@@ -38,25 +38,41 @@ async function ensureDir() {
 }
 
 /**
- * Read a file's raw bytes. Returns null ONLY for ENOENT (legitimately absent).
- * A transient Windows lock (AV / Search indexer holding the handle) is retried
- * a few times; anything still failing throws rather than masquerading as absent.
- * This is the fail-closed foundation: a read we couldn't complete must never be
- * mistaken for an empty file, or the next write would erase real data.
+ * Retry an fs op through a transient Windows lock (AV / Search indexer holding
+ * the handle), then re-throw the original error. The read and write paths share
+ * this so their fault tolerance — the attempt cap and backoff curve — can't
+ * silently drift apart. It deliberately does NOT classify or wrap: the caller
+ * decides what a non-transient failure means (ENOENT → empty for reads, a hard
+ * error for writes).
  */
-async function readRaw(name: string): Promise<string | null> {
-  const file = path.join(DATA_DIR, name);
+async function retryTransient<T>(op: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await fs.readFile(file, "utf8");
+      return await op();
     } catch (err: any) {
-      if (err?.code === "ENOENT") return null;
       if (TRANSIENT.has(err?.code) && attempt < 4) {
         await sleep(20 * (attempt + 1));
         continue;
       }
-      throw new FileStoreError(`cannot read ${name} (${err?.code})`, file, err);
+      throw err;
     }
+  }
+}
+
+/**
+ * Read a file's raw bytes. Returns null ONLY for ENOENT (legitimately absent).
+ * A transient Windows lock is retried; anything still failing throws rather than
+ * masquerading as absent. This is the fail-closed foundation: a read we couldn't
+ * complete must never be mistaken for an empty file, or the next write would
+ * erase real data.
+ */
+async function readRaw(name: string): Promise<string | null> {
+  const file = path.join(DATA_DIR, name);
+  try {
+    return await retryTransient(() => fs.readFile(file, "utf8"));
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return null;
+    throw new FileStoreError(`cannot read ${name} (${err?.code})`, file, err);
   }
 }
 
@@ -97,7 +113,8 @@ async function readJson<T>(name: string, empty: T): Promise<T> {
  */
 async function writeJson<T>(name: string, data: T): Promise<void> {
   const body = JSON.stringify(data, null, 2);
-  await ensureDir();
+  // No ensureDir here: the only caller is mutateFile, inside withCrossProcessLock,
+  // which has already created the dir to place its lock file.
   const file = path.join(DATA_DIR, name);
   const tmp = path.join(
     DATA_DIR,
@@ -111,20 +128,14 @@ async function writeJson<T>(name: string, data: T): Promise<void> {
     } finally {
       await fh.close(); // must close before rename on Windows
     }
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await fs.rename(tmp, file);
-        return;
-      } catch (err: any) {
-        if (!TRANSIENT.has(err?.code) || attempt >= 4) {
-          throw new FileStoreError(
-            `cannot replace ${name} (${err?.code})`,
-            file,
-            err,
-          );
-        }
-        await sleep(20 * (attempt + 1));
-      }
+    try {
+      await retryTransient(() => fs.rename(tmp, file));
+    } catch (err: any) {
+      throw new FileStoreError(
+        `cannot replace ${name} (${err?.code})`,
+        file,
+        err,
+      );
     }
   } finally {
     await fs.unlink(tmp).catch(() => {}); // never leave a temp behind
@@ -223,7 +234,7 @@ async function mutateFile<T, R>(
 ): Promise<R> {
   return withFileLock(name, () =>
     withCrossProcessLock(name, async () => {
-      const data = parseRows(name, await readRaw(name), empty);
+      const data = await readJson(name, empty);
       const { result, write } = mutate(data);
       if (write) await writeJson(name, data);
       return result;
@@ -330,17 +341,25 @@ export async function getPendingActions(): Promise<PendingAction[]> {
   return all.filter((a) => a.status === "pending");
 }
 
-/** Recent terminal rows (triggered / failed / cancelled), newest first. So the
- *  operator can see that a scheduled order failed or was cancelled instead of it
- *  silently vanishing from the pending list. */
-export async function getRecentTerminalActions(
-  limit = 20,
-): Promise<PendingAction[]> {
+/**
+ * The whole scheduled-actions view in ONE read: the pending queue plus the most
+ * recent terminal rows (triggered / failed / cancelled, newest first) so the
+ * operator can see an order that failed or was cancelled instead of it silently
+ * vanishing. Reading the file once — rather than a pending read plus a separate
+ * recent read — halves the I/O on this frontend-polled endpoint and guarantees
+ * the two lists are a consistent snapshot: a row can't flip status mid-read and
+ * appear in both or neither.
+ */
+export async function getScheduledView(
+  recentLimit = 20,
+): Promise<{ pending: PendingAction[]; recent: PendingAction[] }> {
   const all = await readJson<PendingAction[]>(PENDING_FILE, []);
-  return all
+  const pending = all.filter((a) => a.status === "pending");
+  const recent = all
     .filter((a) => a.status !== "pending")
     .sort((a, b) => (b.triggeredAt ?? "").localeCompare(a.triggeredAt ?? ""))
-    .slice(0, limit);
+    .slice(0, recentLimit);
+  return { pending, recent };
 }
 
 export async function addPendingAction(

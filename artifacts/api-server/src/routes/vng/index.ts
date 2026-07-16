@@ -14,8 +14,7 @@ import { mapSectorObjects } from "./sector-map.js";
 import {
   cancelPendingAction,
   recordSector,
-  getPendingActions,
-  getRecentTerminalActions,
+  getScheduledView,
   DATA_DIR,
 } from "./file-store.js";
 
@@ -78,13 +77,12 @@ function extractCoreState(probeResp: any, manniesResp: any, sectorResp: any) {
 
 router.get("/scheduled", async (_req, res) => {
   try {
-    const [actions, recent] = await Promise.all([
-      getPendingActions(),
-      getRecentTerminalActions(),
-    ]);
-    // `recent` = failed/cancelled/triggered rows, so a scheduled order that
-    // failed or was cancelled is visible instead of silently vanishing.
-    res.json({ actions, recent });
+    // One read returns both the pending queue and the recent terminal rows
+    // (failed/cancelled/triggered) as a consistent snapshot, so a scheduled
+    // order that failed or was cancelled is visible instead of silently
+    // vanishing. `actions` keeps the field name the frontend already reads.
+    const { pending, recent } = await getScheduledView();
+    res.json({ actions: pending, recent });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
