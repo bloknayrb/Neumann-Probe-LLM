@@ -310,6 +310,13 @@ export type PendingAction = {
   createdAt: string;
   condition: PendingCondition;
   action: PendingActionPayload;
+  // Which probe this action targets; null = the operator's main probe. Optional
+  // ON DISK — the rows written before multi-probe have no such key, and a missing
+  // key provably means "main" (they predate any second probe). The poller
+  // coalesces `?? null`. It is REQUIRED at the addPendingAction call site (see
+  // its signature) so the schedule_action handler can't silently drop the probe
+  // it's scoped to — an upstream regen that omits the arg fails tsc here.
+  probeId?: number | null;
   // "cancelled" is a terminal status, not a row removal — see cancelPendingAction.
   status: "pending" | "triggered" | "failed" | "cancelled";
   triggeredAt?: string;
@@ -337,7 +344,14 @@ export async function getRecentTerminalActions(
 }
 
 export async function addPendingAction(
-  entry: Omit<PendingAction, "id" | "createdAt" | "status">,
+  // probeId is optional on the type (legacy rows lack it) but REQUIRED here: the
+  // intersection re-adds it as a mandatory field the derived Omit would have left
+  // optional. This is the tripwire — a caller (or an upstream-regenerated
+  // schedule_action handler) that forgets to pass the probe it's scoped to won't
+  // compile, rather than silently scheduling every probe's work onto the main one.
+  entry: Omit<PendingAction, "id" | "createdAt" | "status" | "probeId"> & {
+    probeId: number | null;
+  },
 ): Promise<PendingAction> {
   return mutateFile<PendingAction[], PendingAction>(
     PENDING_FILE,
