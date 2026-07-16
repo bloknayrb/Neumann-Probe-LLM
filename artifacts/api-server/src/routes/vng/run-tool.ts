@@ -103,7 +103,7 @@ export async function afterTool(
       args.y as number,
       args.z as number,
       scannedObjects,
-    ).catch(() => {});
+    ).catch((e) => console.error("[recordSector afterTool/scan_sector]", e));
     return;
   }
 
@@ -112,7 +112,7 @@ export async function afterTool(
     const gsObjects = gs?.sector?.objects ?? [];
     const gsSector = gs?.probe?.sector ?? { x: 0, y: 0, z: 0 };
     await recordSector(gsSector.x, gsSector.y, gsSector.z, gsObjects).catch(
-      () => {},
+      (e) => console.error("[recordSector afterTool/get_game_state]", e),
     );
     return;
   }
@@ -142,7 +142,11 @@ function consentRequiredFor(
 ): string | null {
   if (name === "schedule_action") {
     const inner = (args.action as { type?: unknown } | undefined)?.type;
-    if (typeof inner !== "string") return null; // malformed — the API will reject it
+    // Nothing downstream validates this. schedule_action never reaches the game
+    // API — it writes the row straight to pending-actions.json, casting through
+    // `as any` — and the MCP SDK doesn't check args against inputSchema either.
+    // So an unreadable action type is refused here or it is never refused at all.
+    if (typeof inner !== "string") return "a malformed action payload";
     return requiresConfirmation(inner) ? inner : null;
   }
   return requiresConfirmation(name) ? name : null;

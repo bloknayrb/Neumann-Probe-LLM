@@ -135,6 +135,12 @@ async function executeAction(action: PendingAction): Promise<void> {
 /** Return the manny ID that an action will occupy, if any. */
 function actionMannyId(action: PendingAction): string | null {
   const a = action.action;
+  // Called before the try/catch below, so a row whose action is missing would
+  // throw out of poll() entirely — and since the row stays pending, every later
+  // tick would die on it too, stopping ALL scheduled work permanently. Tolerate
+  // it here; toToolCall rejects it inside the guarded block, where it becomes a
+  // "failed" row instead of a wedged poller.
+  if (!a || typeof a !== "object") return null;
   if (
     a.type === "craft_item" ||
     a.type === "mine_resources" ||

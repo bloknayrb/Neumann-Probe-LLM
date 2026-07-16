@@ -68,6 +68,35 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   try {
     const result = await runTool(name, args, { probeId: PROBE_ID });
+
+    // runTool REFUSES by returning, not by throwing. Returned as a plain content
+    // block this reads as success: the SSE mapper only sets success:false when
+    // is_error is set, and the console renders "✓ ... OK" — so a refused order
+    // would show the operator a green checkmark for something that never
+    // happened. The brain cannot set `confirm`, so this fires for real: it's the
+    // whole "schedule a jump" path.
+    if (
+      result &&
+      typeof result === "object" &&
+      (result as { requiresConfirmation?: unknown }).requiresConfirmation ===
+        true
+    ) {
+      const { tool, gatedOn } = result as { tool: string; gatedOn: string };
+      const why =
+        tool === gatedOn
+          ? "is irreversible"
+          : `schedules "${gatedOn}", which is irreversible`;
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `NOT EXECUTED — nothing was scheduled or changed. "${tool}" ${why}, and irreversible actions need the operator's explicit go-ahead through the console. Tell the operator plainly that this did not happen and why.`,
+          },
+        ],
+      };
+    }
+
     return {
       content: [{ type: "text", text: JSON.stringify(result) }],
     };
