@@ -1,9 +1,11 @@
 import { logger } from "../../lib/logger.js";
 import * as client from "./client.js";
+import { runTool } from "./run-tool.js";
 import {
   getPendingActions,
   resolvePendingAction,
   type PendingAction,
+  type PendingActionPayload,
 } from "./file-store.js";
 
 const POLL_INTERVAL_MS = 30_000;
@@ -12,7 +14,7 @@ let started = false;
 async function checkCondition(
   action: PendingAction,
   mannies: any[],
-  probe: any
+  probe: any,
 ): Promise<boolean> {
   const cond = action.condition;
   if (cond.type === "manny_idle") {
@@ -31,8 +33,12 @@ async function checkCondition(
       const allPresent = cond.requireItems.every((req) => itemTypes.has(req));
       if (!allPresent) {
         logger.info(
-          { actionId: action.id, requireItems: cond.requireItems, found: [...itemTypes] },
-          "poller: manny idle but required items not yet in inventory — waiting"
+          {
+            actionId: action.id,
+            requireItems: cond.requireItems,
+            found: [...itemTypes],
+          },
+          "poller: manny idle but required items not yet in inventory — waiting",
         );
         return false;
       }
@@ -46,38 +52,95 @@ async function checkCondition(
   return false;
 }
 
-async function executeAction(action: PendingAction): Promise<void> {
-  const a = action.action;
+/**
+ * Translate a stored action into the (tool, args) pair `runTool` speaks. The
+ * stored payload is camelCase; the tool schemas are snake_case.
+ */
+export function toToolCall(a: PendingActionPayload): {
+  name: string;
+  args: Record<string, unknown>;
+} {
   switch (a.type) {
     case "move_probe":
-      await client.moveProbe(a.x, a.y, a.z);
-      break;
+      return { name: "move_probe", args: { x: a.x, y: a.y, z: a.z } };
     case "craft_item":
-      await client.craftItem(a.mannyId, a.recipe);
-      break;
+      return {
+        name: "craft_item",
+        args: { manny_id: a.mannyId, recipe: a.recipe },
+      };
     case "mine_resources":
-      await client.mineResources(
-        a.mannyId,
-        a.objectId,
-        a.resources,
-        a.targetAmount,
-        a.targetContainerId
-      );
-      break;
+      return {
+        name: "mine_resources",
+        args: {
+          manny_id: a.mannyId,
+          object_id: a.objectId,
+          resources: a.resources,
+          target_amount: a.targetAmount,
+          target_container_id: a.targetContainerId,
+        },
+      };
     case "detach_container":
-      await client.detachContainer(a.mannyId, a.containerId);
-      break;
+      // A stored detach carries no mode, so it is always a plain drift. Sent
+      // explicitly rather than leaning on the handler's default: the schema
+      // marks mode required, and the default is two layers away in client.ts.
+      return {
+        name: "detach_container",
+        args: {
+          manny_id: a.mannyId,
+          container_id: a.containerId,
+          mode: "drifting",
+        },
+      };
     case "recover_container":
-      await client.recoverContainer(a.mannyId, a.objectId);
-      break;
+      return {
+        name: "recover_container",
+        args: { manny_id: a.mannyId, object_id: a.objectId },
+      };
     default:
       throw new Error(`Unknown action type`);
+  }
+}
+
+/**
+ * Fire a due action through the same choke point as every other game action, so
+ * it gets `afterTool` bookkeeping — a scheduled detach used to leave no trace in
+ * detached-containers.json, orphaning the container the moment it drifted.
+ *
+ * `confirm: true` is honest rather than a bypass: consent happened at scheduling
+ * time. `runTool` inspects a schedule_action payload and refuses to create the
+ * row at all unless the operator confirmed the action inside it, so a pending
+ * row for an irreversible action can only exist if it was already approved. The
+ * poller is carrying out a decision, not making one.
+ */
+async function executeAction(action: PendingAction): Promise<void> {
+  const { name, args } = toToolCall(action.action);
+  const result = await runTool(name, args, { confirm: true });
+
+  // runTool REFUSES by returning, not by throwing. Our caller reads a clean
+  // return as success and stamps the row "triggered" — so a refusal that slips
+  // through here would be logged as "action triggered successfully" while
+  // nothing happened. `confirm: true` means this is currently unreachable;
+  // it's here so that if that ever stops being true, it fails loudly.
+  if (
+    result &&
+    typeof result === "object" &&
+    (result as { requiresConfirmation?: unknown }).requiresConfirmation === true
+  ) {
+    throw new Error(
+      `runTool refused ${name} despite confirm:true — scheduled action not executed`,
+    );
   }
 }
 
 /** Return the manny ID that an action will occupy, if any. */
 function actionMannyId(action: PendingAction): string | null {
   const a = action.action;
+  // Called before the try/catch below, so a row whose action is missing would
+  // throw out of poll() entirely — and since the row stays pending, every later
+  // tick would die on it too, stopping ALL scheduled work permanently. Tolerate
+  // it here; toToolCall rejects it inside the guarded block, where it becomes a
+  // "failed" row instead of a wedged poller.
+  if (!a || typeof a !== "object") return null;
   if (
     a.type === "craft_item" ||
     a.type === "mine_resources" ||
@@ -119,14 +182,14 @@ async function poll(): Promise<void> {
     if (mannyId && claimedMannies.has(mannyId)) {
       logger.info(
         { actionId: action.id, mannyId },
-        "poller: manny already claimed this cycle — deferring to next tick"
+        "poller: manny already claimed this cycle — deferring to next tick",
       );
       continue;
     }
     if (action.action.type === "move_probe" && probeMoveClaimed) {
       logger.info(
         { actionId: action.id },
-        "poller: probe move already claimed this cycle — deferring"
+        "poller: probe move already claimed this cycle — deferring",
       );
       continue;
     }
@@ -135,7 +198,10 @@ async function poll(): Promise<void> {
     try {
       conditionMet = await checkCondition(action, mannies, probe);
     } catch (err) {
-      logger.warn({ err, actionId: action.id }, "poller: condition check error");
+      logger.warn(
+        { err, actionId: action.id },
+        "poller: condition check error",
+      );
       continue;
     }
 
@@ -143,20 +209,26 @@ async function poll(): Promise<void> {
 
     logger.info(
       { actionId: action.id, description: action.description },
-      "poller: condition met — executing action"
+      "poller: condition met — executing action",
     );
 
     try {
       await executeAction(action);
       await resolvePendingAction(action.id, { status: "triggered" });
-      logger.info({ actionId: action.id }, "poller: action triggered successfully");
+      logger.info(
+        { actionId: action.id },
+        "poller: action triggered successfully",
+      );
 
       // Mark the resource as claimed so subsequent actions skip this cycle
       if (mannyId) claimedMannies.add(mannyId);
       if (action.action.type === "move_probe") probeMoveClaimed = true;
     } catch (err: any) {
       const msg = err?.message ?? String(err);
-      logger.error({ actionId: action.id, err: msg }, "poller: action execution failed");
+      logger.error(
+        { actionId: action.id, err: msg },
+        "poller: action execution failed",
+      );
       await resolvePendingAction(action.id, { status: "failed", error: msg });
     }
   }

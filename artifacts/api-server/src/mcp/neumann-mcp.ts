@@ -22,23 +22,17 @@ import {
 import { TOOLS } from "../routes/vng/tools.js";
 import { runTool } from "../routes/vng/run-tool.js";
 import { parseProbeId } from "../routes/vng/client.js";
+import {
+  assertPolicyCoversTools,
+  isExposedToBrain,
+} from "../routes/vng/tool-policy.js";
 
-const SAFE_TOOLS = new Set<string>([
-  "get_game_state",
-  "scan_sector",
-  "craft_item",
-  "atomic_printer_craft",
-  "mine_resources",
-  "inspect_asteroid",
-  "repair_manny",
-  "rename_manny",
-  "deploy_manny",
-  "recover_container",
-  "schedule_action",
-  "cancel_scheduled_action",
-]);
+// Refuse to start on policy/tools drift rather than silently exposing the wrong
+// set. This is the load-bearing check: a shrunken toolset is invisible at
+// runtime — the brain just stops using a capability and never says why.
+assertPolicyCoversTools();
 
-const exposed = TOOLS.filter((t) => SAFE_TOOLS.has(t.function.name));
+const exposed = TOOLS.filter((t) => isExposedToBrain(t.function.name));
 
 // Safe to resolve once: the CLI spawns a fresh subprocess per order (see above),
 // so this never has to change mid-process. A malformed value throws here and
@@ -65,7 +59,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const name = req.params.name;
   const args = (req.params.arguments ?? {}) as Record<string, unknown>;
 
-  if (!SAFE_TOOLS.has(name)) {
+  if (!isExposedToBrain(name)) {
     return {
       isError: true,
       content: [{ type: "text", text: `Unknown or disallowed tool: ${name}` }],
@@ -74,6 +68,35 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   try {
     const result = await runTool(name, args, { probeId: PROBE_ID });
+
+    // runTool REFUSES by returning, not by throwing. Returned as a plain content
+    // block this reads as success: the SSE mapper only sets success:false when
+    // is_error is set, and the console renders "✓ ... OK" — so a refused order
+    // would show the operator a green checkmark for something that never
+    // happened. The brain cannot set `confirm`, so this fires for real: it's the
+    // whole "schedule a jump" path.
+    if (
+      result &&
+      typeof result === "object" &&
+      (result as { requiresConfirmation?: unknown }).requiresConfirmation ===
+        true
+    ) {
+      const { tool, gatedOn } = result as { tool: string; gatedOn: string };
+      const why =
+        tool === gatedOn
+          ? "is irreversible"
+          : `schedules "${gatedOn}", which is irreversible`;
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `NOT EXECUTED — nothing was scheduled or changed. "${tool}" ${why}, and irreversible actions need the operator's explicit go-ahead through the console. Tell the operator plainly that this did not happen and why.`,
+          },
+        ],
+      };
+    }
+
     return {
       content: [{ type: "text", text: JSON.stringify(result) }],
     };

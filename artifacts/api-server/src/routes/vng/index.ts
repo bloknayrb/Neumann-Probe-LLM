@@ -9,6 +9,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import * as client from "./client.js";
 import { runTool } from "./run-tool.js";
+import { SAFE } from "./tool-policy.js";
 import { mapSectorObjects } from "./sector-map.js";
 import {
   cancelPendingAction,
@@ -24,23 +25,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MCP_SERVER_PATH = path.join(HERE, "neumann-mcp.mjs");
 const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
 
-// The 12 safe tools the headless brain is allowed to call (MCP-prefixed).
-const ALLOWED_MCP_TOOLS = [
-  "get_game_state",
-  "scan_sector",
-  "craft_item",
-  "atomic_printer_craft",
-  "mine_resources",
-  "inspect_asteroid",
-  "repair_manny",
-  "rename_manny",
-  "deploy_manny",
-  "recover_container",
-  "schedule_action",
-  "cancel_scheduled_action",
-]
-  .map((t) => `mcp__neumann__${t}`)
-  .join(" ");
+// The safe tools the headless brain is allowed to call (MCP-prefixed). Derived
+// from the policy, never hand-listed: this and the MCP server's own filter must
+// agree, and when they were two copies they drifted without anything noticing.
+const ALLOWED_MCP_TOOLS = [...SAFE].map((t) => `mcp__neumann__${t}`).join(" ");
 
 function resolveClaudeBin(): { bin: string; shell: boolean } {
   if (process.env.CLAUDE_BIN)
@@ -153,9 +141,13 @@ router.get("/state", async (req, res) => {
     // sectorObjects is [] — recording that would clobber the last-known-good
     // detail for this sector (visited-sectors store, read by the MAP/SECTORS
     // tabs) with an empty list.
-    if (!sectorUnavailable)
-      recordSector(sector.x, sector.y, sector.z, sectorObjects, probeId).catch(
-        (e) => console.error("[recordSector /state]", e),
+    //
+    // Main probe only: the store is the main probe's log, and polling /state
+    // with a probe selected in the UI must not write that probe's position into
+    // it. Per-probe history: GET /api/probe/{probeId}/visited-sectors.
+    if (!sectorUnavailable && probeId == null)
+      recordSector(sector.x, sector.y, sector.z, sectorObjects).catch((e) =>
+        console.error("[recordSector /state]", e),
       );
 
     const manniesNorm = mannies.map((m: any) => {
@@ -268,7 +260,7 @@ OPERATING RULES:
 - ALWAYS call get_game_state FIRST to load the current probe status, mannies (with their exact string IDs), sector objects, inventory, and crafting recipes. Never invent IDs — only use IDs returned by the tools.
 - Use exact Manny IDs (long strings like "mny_e84fa37181de693e8e831147").
 - Mining, crafting, and salvage are long-running: once started the Manny is busy for real game time. Tell the operator the task was QUEUED.
-- For "when X finishes, do Y" style orders, use schedule_action and report the scheduled action ID.
+- For "when X finishes, do Y" style orders, use schedule_action and report the scheduled action ID. Scheduling is gated on what you schedule, not on the tool: if Y is an irreversible action (moving/jumping, jettisoning, detaching or dropping containers, salvage, recall), schedule_action is REFUSED and nothing is queued. Say so plainly — do not report a scheduled action ID you did not receive.
 - MINING A SOLAR SYSTEM: when the sector shows a solar_system object and you need to mine, you MUST call scan_sector for the current sector (x, y, z) first. The scan returns a bookmarkTargets array inside the solar_system object — those are the individual body IDs you can mine. The solar_system wrapper itself cannot be mined. Pick by category: "frozen"/"ocean" for ice and organics, "rocky"/"dwarf" for metals, any for deuterium. Then mine the chosen body ID. Do this automatically without asking.
 - You have access ONLY to safe, reversible tools. Destructive actions (moving the probe, jettisoning, detaching/dropping containers, salvage, recall) are intentionally unavailable — if the operator asks for one, explain it must be confirmed through the operator console.
 - Be concise and precise. End with a short summary of what you did or found.`;

@@ -152,25 +152,14 @@ export async function cancelPendingAction(id: number): Promise<boolean> {
   return true;
 }
 
-export type ProbeVisit = {
-  firstVisitedAt: string;
-  lastVisitedAt: string;
-  visitCount: number;
-};
-
 /**
- * One record per sector, mixing two different kinds of fact:
+ * One record per sector, keyed by coordinates and scoped to the operator's main
+ * probe: the counters mean "times the main probe observed this sector", and only
+ * main-probe observations write here.
  *
- *  - `objects` / `resourceSummary` describe the SECTOR. They're observer-
- *    independent — any probe scanning these coordinates sees the same things —
- *    so they stay global and every probe's scan refreshes them.
- *  - the visit counters describe a (probe, sector) PAIR. The top-level ones are
- *    the operator's main probe; other probes get their own entry in
- *    `probeVisits`, so commanding a secondary probe can't inflate the main
- *    probe's exploration history.
- *
- * `probeVisits` is optional, so records written before it existed stay valid and
- * read back as "main probe only" — no migration needed.
+ * Per-probe exploration history is NOT tracked here — the game API already
+ * serves it authoritatively at `GET /api/probe/{probeId}/visited-sectors`. Ask
+ * it rather than growing a second, staler copy in this file.
  */
 export type VisitedSector = {
   id: number;
@@ -182,7 +171,6 @@ export type VisitedSector = {
   visitCount: number;
   objects: object[];
   resourceSummary: string[];
-  probeVisits?: Record<string, ProbeVisit>;
 };
 
 const CONTAINERS_FILE = "detached-containers.json";
@@ -277,40 +265,14 @@ export async function getSectors(): Promise<VisitedSector[]> {
 }
 
 /**
- * Credit one visit to the observing probe, leaving every other probe's counters
- * alone. Both the update and insert paths call this, so the main-vs-secondary
- * rule is stated once.
- */
-function bumpVisit(
-  row: VisitedSector,
-  probeId: number | null,
-  now: string,
-): void {
-  if (probeId == null) {
-    row.lastVisitedAt = now;
-    row.visitCount += 1;
-    return;
-  }
-  const key = String(probeId);
-  const prev = row.probeVisits?.[key];
-  (row.probeVisits ??= {})[key] = {
-    firstVisitedAt: prev?.firstVisitedAt ?? now,
-    lastVisitedAt: now,
-    visitCount: (prev?.visitCount ?? 0) + 1,
-  };
-}
-
-/**
- * @param probeId Which probe made the observation. null = the operator's main
- *   probe (the common case). A non-null ID records the visit under that probe
- *   instead, leaving the main probe's counters untouched.
+ * Record a main-probe observation of a sector. Callers must not invoke this for
+ * a secondary probe — see the `VisitedSector` docs and the guard in `afterTool`.
  */
 export async function recordSector(
   x: number,
   y: number,
   z: number,
   objects: object[],
-  probeId: number | null = null,
 ): Promise<void> {
   const resourceSummary: string[] = Array.from(
     new Set((objects as any[]).flatMap((o) => o.resourceTypes ?? [])),
@@ -412,10 +374,10 @@ export async function recordSector(
 
   if (idx !== -1) {
     const row = rows[idx];
-    // Sector contents refresh regardless of observer — see VisitedSector.
     row.objects = simplified;
     row.resourceSummary = resourceSummary;
-    bumpVisit(row, probeId, now);
+    row.lastVisitedAt = now;
+    row.visitCount += 1;
   } else {
     const row: VisitedSector = {
       id: rows.length > 0 ? Math.max(...rows.map((r) => r.id)) + 1 : 1,
@@ -424,11 +386,10 @@ export async function recordSector(
       sectorZ: z,
       firstVisitedAt: now,
       lastVisitedAt: now,
-      visitCount: 0,
+      visitCount: 1,
       objects: simplified,
       resourceSummary,
     };
-    bumpVisit(row, probeId, now);
     rows.push(row);
   }
   await writeFile(SECTORS_FILE, rows);

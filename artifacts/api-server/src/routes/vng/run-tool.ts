@@ -1,5 +1,6 @@
 import * as client from "./client.js";
 import { executeTool } from "./tools.js";
+import { requiresConfirmation } from "./tool-policy.js";
 import {
   addContainer,
   markContainerRecovered,
@@ -7,20 +8,6 @@ import {
   toSectorObjectId,
   updateContainerAnchor,
 } from "./file-store.js";
-
-/**
- * Tools that permanently change game state and must never run without an
- * explicit confirmation. These are deliberately NOT exposed via the MCP server,
- * so the headless Claude brain cannot invoke them at all.
- */
-export const IRREVERSIBLE = new Set<string>([
-  "move_probe",
-  "jettison_item",
-  "detach_container",
-  "drop_container_on_asteroid",
-  "salvage_object",
-  "recall_manny",
-]);
 
 /**
  * Post-tool bookkeeping: persists local tracking state after a successful tool
@@ -104,6 +91,11 @@ export async function afterTool(
     return;
   }
 
+  // visited-sectors.json is the MAIN probe's log (see VisitedSector). Recording a
+  // secondary probe's observation there would credit its travels to the main
+  // probe; per-probe history comes from GET /api/probe/{probeId}/visited-sectors.
+  if (probeId != null) return;
+
   if (name === "scan_sector") {
     const scannedObjects: any[] = (result as any)?.sector?.objects ?? [];
     await recordSector(
@@ -111,8 +103,7 @@ export async function afterTool(
       args.y as number,
       args.z as number,
       scannedObjects,
-      probeId,
-    ).catch(() => {});
+    ).catch((e) => console.error("[recordSector afterTool/scan_sector]", e));
     return;
   }
 
@@ -120,20 +111,46 @@ export async function afterTool(
     const gs = result as any;
     const gsObjects = gs?.sector?.objects ?? [];
     const gsSector = gs?.probe?.sector ?? { x: 0, y: 0, z: 0 };
-    await recordSector(
-      gsSector.x,
-      gsSector.y,
-      gsSector.z,
-      gsObjects,
-      probeId,
-    ).catch(() => {});
+    await recordSector(gsSector.x, gsSector.y, gsSector.z, gsObjects).catch(
+      (e) => console.error("[recordSector afterTool/get_game_state]", e),
+    );
     return;
   }
 }
 
 export type RunToolResult =
-  | { requiresConfirmation: true; tool: string }
+  | { requiresConfirmation: true; tool: string; gatedOn: string }
   | unknown;
+
+/**
+ * Resolve what a call actually needs consent for, or null if it needs none.
+ *
+ * `schedule_action` is the reason this isn't just a name lookup: the tool itself
+ * only writes a row to pending-actions.json, but that row names an action the
+ * poller will later execute unattended. Gating the wrapper by its own name would
+ * wave through "jump to (9,2,4) once manny-3 goes idle" — the jump still
+ * happens, just 30 seconds later and with nobody asked. So a scheduled action is
+ * gated on its PAYLOAD, which makes scheduling a jump need exactly the same
+ * go-ahead as jumping.
+ *
+ * Unknown payload types fall through to `requiresConfirmation` and gate, so a
+ * tool upstream adds to the enum is refused until it's classified, not run.
+ */
+function consentRequiredFor(
+  name: string,
+  args: Record<string, unknown>,
+): string | null {
+  if (name === "schedule_action") {
+    const inner = (args.action as { type?: unknown } | undefined)?.type;
+    // Nothing downstream validates this. schedule_action never reaches the game
+    // API — it writes the row straight to pending-actions.json, casting through
+    // `as any` — and the MCP SDK doesn't check args against inputSchema either.
+    // So an unreadable action type is refused here or it is never refused at all.
+    if (typeof inner !== "string") return "a malformed action payload";
+    return requiresConfirmation(inner) ? inner : null;
+  }
+  return requiresConfirmation(name) ? name : null;
+}
 
 /**
  * Execute a game tool with confirmation-gating for irreversible actions and
@@ -149,8 +166,9 @@ export async function runTool(
   args: Record<string, unknown>,
   opts?: { confirm?: boolean; probeId?: number | null },
 ): Promise<RunToolResult> {
-  if (IRREVERSIBLE.has(name) && !opts?.confirm) {
-    return { requiresConfirmation: true, tool: name };
+  const gatedOn = consentRequiredFor(name, args);
+  if (gatedOn && !opts?.confirm) {
+    return { requiresConfirmation: true, tool: name, gatedOn };
   }
   const probeId = opts?.probeId ?? null;
   const result = await executeTool(name, args, probeId);
