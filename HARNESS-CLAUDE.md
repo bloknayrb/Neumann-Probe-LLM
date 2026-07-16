@@ -3,7 +3,8 @@
 The api-server's game "brain" no longer uses OpenAI. `POST /api/vng/command` now
 spawns the local **Claude Code CLI in headless mode** using your **Claude
 subscription** (OAuth login — no API key, no API billing). The CLI reaches the
-game only through a custom **stdio MCP server** that exposes the 12 safe tools.
+game only through a custom **stdio MCP server** that exposes just the tools
+classified `SAFE` in `src/routes/vng/tool-policy.ts`.
 
 ## Endpoints (all under `/api/vng`)
 
@@ -21,15 +22,29 @@ SSE event shapes emitted by `/command` (unchanged, frontend-compatible):
 
 ## Tool gating
 
-`runTool` (`src/routes/vng/run-tool.ts`) is the single choke point. The 6
-**irreversible** tools — `move_probe`, `jettison_item`, `detach_container`,
-`drop_container_on_asteroid`, `salvage_object`, `recall_manny` — require
-`confirm:true` or they return `{requiresConfirmation:true}` **without executing**.
-They are **not registered on the MCP server at all**, so the headless brain
-physically cannot call them. It only sees the 12 safe tools:
-`get_game_state, scan_sector, craft_item, atomic_printer_craft, mine_resources,
-inspect_asteroid, repair_manny, rename_manny, deploy_manny, recover_container,
-schedule_action, cancel_scheduled_action`.
+`runTool` (`src/routes/vng/run-tool.ts`) is the single choke point, and
+`src/routes/vng/tool-policy.ts` is the **source of truth** for the
+classification — read it rather than any count restated here (counts rot; that
+is why the earlier "12 safe / 6 irreversible" lists here were both wrong). Its
+boot-time `assertPolicyCoversTools()` turns any drift between the policy and
+`tools.ts` into a loud startup failure.
+
+Three sets keyed by tool name:
+
+- **`SAFE`** — reversible or read-only. The **only** tools registered on the MCP
+  server, so the only ones the headless brain can call; also callable via
+  `POST /tool` without `confirm`.
+- **`IRREVERSIBLE`** — permanent game-state changes (jump, jettison, detach/drop
+  container, salvage, recall — plus `assemble_probe`, `send_message`,
+  `transfer_deuterium`). Never on the MCP server; through `runTool` they return
+  `{requiresConfirmation:true}` **without executing** unless `confirm:true`.
+- **`UNREVIEWED`** — reviewed but deliberately held out of the brain's reach
+  (`improve_probe`, `turn_on_relay`, `install_waypoint_bookmark`); gated exactly
+  like `IRREVERSIBLE`. A tool that lands here by default (e.g. an upstream
+  addition) is undecided until someone classifies it.
+
+Scheduling is gated on the **scheduled payload**, not on `schedule_action`
+itself, so queuing a jump needs the same go-ahead as jumping.
 
 ## Environment
 

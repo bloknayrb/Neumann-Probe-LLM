@@ -24,10 +24,11 @@ Ignore for most work: `artifacts/mockup-sandbox` (shadcn playground), `lib/db` (
 
 ## Key files in the backend
 
-- `src/routes/vng/tools.ts` — `TOOLS` (18 schemas) + `executeTool(name,args)` → `client.ts` (fetch to neumann-probe.net with `VNG_API_KEY`).
+- `src/routes/vng/tools.ts` — the `TOOLS` schema set + `executeTool(name,args)` → `client.ts` (fetch to neumann-probe.net with `VNG_API_KEY`).
+- `src/routes/vng/tool-policy.ts` — **source of truth** for tool safety (`SAFE` / `IRREVERSIBLE` / `UNREVIEWED` sets); `assertPolicyCoversTools()` fails boot on drift. Consult it rather than any count restated in docs.
 - `src/routes/vng/run-tool.ts` — **the choke point.** `runTool` = irreversible-gate + `executeTool` + `afterTool` (writes `data/*.json` bookkeeping: visited-sectors, detached-containers). Route new game actions through `runTool`, never `executeTool` directly.
 - `src/routes/vng/index.ts` — the `/api/vng` routes: `/state`, `/command` (Claude spawn + stream-json→SSE), `/tool` (direct call, 409 on gated), `/scheduled`.
-- `src/mcp/neumann-mcp.ts` — stdio MCP server exposing **only the 12 safe tools** (the 6 irreversible ones are omitted so the autonomous brain can't call them). Bundled to `dist/neumann-mcp.mjs`.
+- `src/mcp/neumann-mcp.ts` — stdio MCP server exposing **only the `SAFE` tools** (everything gated is omitted so the autonomous brain can't call them). Bundled to `dist/neumann-mcp.mjs`.
 - `src/load-env.ts` — loads the monorepo-root `.env` (native `process.loadEnvFile`; no dotenv). Imported first in `src/index.ts`.
 
 ## Commands

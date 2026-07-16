@@ -413,6 +413,10 @@ export async function cancelPendingAction(id: number): Promise<boolean> {
  * it rather than growing a second, staler copy in this file.
  */
 export type VisitedSector = {
+  // A display/order handle only — every lookup and the recordSector upsert match
+  // on (sectorX, sectorY, sectorZ), never on id. So the one duplicate id:7 in the
+  // live file (a leftover from the f46fc89 text-merge of two tracked JSON arrays,
+  // NOT a runtime race) is inert; renumbering isn't worth a backup + downtime.
   id: number;
   sectorX: number;
   sectorY: number;

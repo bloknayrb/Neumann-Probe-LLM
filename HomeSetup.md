@@ -153,13 +153,13 @@ The repo includes the original author's explored-sector data. Run this command o
 **In PowerShell** (search "PowerShell" in the Start menu, open it, navigate to the repo folder with `cd <path-to-repo>`):
 
 ```
-Set-Content artifacts\api-server\data\visited-sectors.json '{"sectors":[]}'
+Set-Content artifacts\api-server\data\visited-sectors.json '[]'
 ```
 
 **Or in Command Prompt:**
 
 ```
-echo {"sectors":[]}> artifacts\api-server\data\visited-sectors.json
+echo []> artifacts\api-server\data\visited-sectors.json
 ```
 
 > If you get an error saying the file or folder doesn't exist, skip this step — the app will create the file on its own when it first starts.
@@ -167,7 +167,7 @@ echo {"sectors":[]}> artifacts\api-server\data\visited-sectors.json
 > **Using the desktop app instead?** The Electron version stores its data in `%APPDATA%\Probe Commander\data\`. To reset sector history there, run in PowerShell:
 >
 > ```
-> Set-Content "$env:APPDATA\Probe Commander\data\visited-sectors.json" '{"sectors":[]}'
+> Set-Content "$env:APPDATA\Probe Commander\data\visited-sectors.json" '[]'
 > ```
 
 ---
