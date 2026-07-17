@@ -1,17 +1,22 @@
 # Claude-Code-CLI Brain (Neumann-Probe-LLM harness)
 
-The api-server's game "brain" no longer uses OpenAI. `POST /api/vng/command` now
-spawns the local **Claude Code CLI in headless mode** using your **Claude
-subscription** (OAuth login — no API key, no API billing). The CLI reaches the
+The api-server's game "brain" is selectable at runtime via `VNG_BRAIN` (default
+`claude`), or per request via a `provider` field on `POST /api/vng/command`. The
+**Claude** brain spawns the local **Claude Code CLI in headless mode** using your
+**Claude subscription** (OAuth login — no API key, no API billing), reaching the
 game only through a custom **stdio MCP server** that exposes just the tools
-classified `SAFE` in `src/routes/vng/tool-policy.ts`.
+classified `SAFE` in `src/routes/vng/tool-policy.ts`. The **OpenAI** brain (opt-in:
+`VNG_BRAIN=openai` or `provider:"openai"`) runs a chat-completions tool-calling
+loop billed per-token against `OPENAI_API_KEY`. **Both** brains are fenced the
+same way — only `SAFE` tools, every call through `runTool` — and emit the
+identical SSE shape, so the frontend is brain-agnostic.
 
 ## Endpoints (all under `/api/vng`)
 
 | Method + path                              | Purpose                                                                                                                                                                                                                                                              |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET  /state`                              | Live probe telemetry. `?probeId=N` targets another owned probe.                                                                                                                                                                                                      |
-| `POST /command`                            | Natural-language order. Spawns headless Claude, streams SSE. Body `{ command, sessionId?, probeId? }`. A non-integer `probeId` → `400`.                                                                                                                              |
+| `POST /command`                            | Natural-language order, streamed as SSE. Body `{ command, sessionId?, probeId?, provider? }`. `provider` (`claude`\|`openai`) or `VNG_BRAIN` selects the brain (default `claude`). A non-integer `probeId` → `400`.                                                                                                                              |
 | `POST /tool`                               | **Direct tool call, no LLM.** Body `{ tool, args?, confirm? }`. `200 {ok,result}`; irreversible tool without `confirm:true` → `409 {requiresConfirmation:true,tool}`; error → `500 {error}`. Always targets the main probe — it has no `probeId`, unlike `/command`. |
 | `GET  /scheduled`, `DELETE /scheduled/:id` | Scheduled-action management (unchanged).                                                                                                                                                                                                                             |
 
@@ -32,8 +37,9 @@ boot-time `assertPolicyCoversTools()` turns any drift between the policy and
 Three sets keyed by tool name:
 
 - **`SAFE`** — reversible or read-only. The **only** tools registered on the MCP
-  server, so the only ones the headless brain can call; also callable via
-  `POST /tool` without `confirm`.
+  server (Claude brain) and the **only** ones handed to the OpenAI brain, so the
+  only ones either brain can call; also callable via `POST /tool` without
+  `confirm`.
 - **`IRREVERSIBLE`** — permanent game-state changes (jump, jettison, detach/drop
   container, salvage, recall, cargo drops — plus `assemble_probe`, `send_message`,
   `transfer_deuterium`; see `tool-policy.ts` for the exact membership). Never on
@@ -54,9 +60,18 @@ Node's native `process.loadEnvFile`, no dotenv dependency).
 
 - `VNG_API_KEY` (required) — game API auth; forwarded to the MCP subprocess.
 - `PORT` (required) — server bind port.
+- `VNG_BRAIN` (optional, default `claude`) — brain used by `/command` when the
+  request omits `provider`. `claude` | `openai`.
 - `CLAUDE_BRAIN_MODEL` (optional, default `sonnet`) — model passed to `--model`.
 - `CLAUDE_BIN` (optional) — path to the `claude` executable. Auto-detected at
   `~/.local/bin/claude(.exe)`, else falls back to `claude` on PATH.
+- `OPENAI_API_KEY` (required for the OpenAI brain only) — read by the OpenAI SDK
+  when `AI_INTEGRATIONS_OPENAI_API_KEY` is unset; **billed per token**. With no
+  base URL set the SDK targets `api.openai.com`.
+- `AI_INTEGRATIONS_OPENAI_BASE_URL` / `AI_INTEGRATIONS_OPENAI_API_KEY` (optional)
+  — point the OpenAI brain at an OpenAI-compatible gateway (Groq, a proxy, …)
+  instead of `api.openai.com`.
+- `OPENAI_BRAIN_MODEL` (optional, default `gpt-5.4`) — model for the OpenAI brain.
 - `VNG_DATA_DIR` (set internally) — passed to the MCP subprocess so its
   bookkeeping writes to the same `data/` dir as the server. Takes precedence
   over `DATA_DIR`. `file-store.ts` exports the resolved dir; import it rather
