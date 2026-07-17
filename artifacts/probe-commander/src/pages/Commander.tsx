@@ -1380,31 +1380,15 @@ export default function Commander() {
         )}
       </button>
 
-      <div
-        className={cn("min-h-screen p-4", !fillWidth && "max-w-7xl mx-auto")}
-      >
+      <div className={cn("h-screen flex flex-col p-4", !fillWidth && "max-w-7xl mx-auto")}>
         {isDesktop ? (
-          // Fixed height (p-4 = 2rem vertical) gives the group a resolved height for
-          // its drag math; parent stays min-h-screen so the mobile stack can grow.
-          <ResizablePanelGroup
-            direction="horizontal"
-            autoSaveId="pc-panes"
-            className="h-[calc(100vh-2rem)]"
-          >
-            <ResizablePanel
-              defaultSize={22}
-              minSize={18}
-              maxSize={45}
-              className="flex flex-col gap-2 min-h-0"
-            >
+          // Left panel takes most space; right terminal is smaller but still draggable.
+          <ResizablePanelGroup direction="horizontal" autoSaveId="pc-panes" className="h-full">
+            <ResizablePanel defaultSize={72} minSize={40} className="flex flex-col gap-2 min-h-0">
               {leftContent}
             </ResizablePanel>
             <ResizableHandle withHandle className="mx-2" />
-            <ResizablePanel
-              defaultSize={78}
-              minSize={40}
-              className="flex flex-col min-h-0"
-            >
+            <ResizablePanel defaultSize={28} minSize={18} maxSize={50} className="flex flex-col min-h-0">
               {rightContent}
             </ResizablePanel>
           </ResizablePanelGroup>
