@@ -1014,6 +1014,9 @@ export default function Commander() {
     z: number;
   } | null>(null);
   const [selectedProbeId, setSelectedProbeId] = useState<number | null>(null);
+  // Which AI brain runs the order. "claude" = subscription CLI (default);
+  // "openai" = the OpenAI loop (bills per-token). Sent as `provider` per command.
+  const [brain, setBrain] = useState<"claude" | "openai">("claude");
 
   // Fill-window-width preference. Pane sizes persist via the panel group's
   // autoSaveId; this boolean is the only value we hand-persist.
@@ -1103,7 +1106,11 @@ export default function Commander() {
       const res = await fetch(`${BASE}/api/vng/command`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: cmd, probeId: selectedProbeId }),
+        body: JSON.stringify({
+          command: cmd,
+          probeId: selectedProbeId,
+          provider: brain,
+        }),
       });
       if (!res.ok || !res.body) throw new Error(`Server error: ${res.status}`);
       const reader = res.body.getReader();
@@ -1135,7 +1142,7 @@ export default function Commander() {
     setLiveEvents([]);
     setIsRunning(false);
     setLogRefetch((n) => n + 1);
-  }, [input, isRunning, selectedProbeId]);
+  }, [input, isRunning, selectedProbeId, brain]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1352,6 +1359,16 @@ export default function Commander() {
               className="w-full bg-transparent text-foreground text-sm placeholder:text-muted-foreground/40 resize-none outline-none font-mono"
             />
           </div>
+          <select
+            value={brain}
+            onChange={(e) => setBrain(e.target.value as "claude" | "openai")}
+            disabled={isRunning}
+            title="Which AI brain executes the order"
+            className="shrink-0 self-end mb-0.5 bg-card border border-border rounded px-2 py-2 text-xs tracking-widest text-muted-foreground outline-none focus:border-primary disabled:opacity-30"
+          >
+            <option value="claude">CLAUDE</option>
+            <option value="openai">OPENAI</option>
+          </select>
           <button
             onClick={sendCommand}
             disabled={isRunning || !input.trim()}
