@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'" />
+  <title>Probe Commander — Setup</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 13px;
+      background: #0a0e0a;
+      color: #22c55e;
+      padding: 28px 32px 24px;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    .header {
+      border-bottom: 1px solid #166534;
+      padding-bottom: 14px;
+      margin-bottom: 22px;
+    }
+
+    .title {
+      font-size: 16px;
+      font-weight: bold;
+      letter-spacing: 0.12em;
+      color: #4ade80;
+    }
+
+    .subtitle {
+      font-size: 11px;
+      color: #166534;
+      margin-top: 4px;
+      letter-spacing: 0.06em;
+    }
+
+    .field {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      color: #16a34a;
+      margin-bottom: 5px;
+      text-transform: uppercase;
+    }
+
+    input {
+      width: 100%;
+      background: #0d1a0d;
+      border: 1px solid #166534;
+      color: #22c55e;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 13px;
+      padding: 7px 10px;
+      outline: none;
+      border-radius: 2px;
+      transition: border-color 0.15s;
+    }
+
+    input:focus {
+      border-color: #22c55e;
+    }
+
+    input::placeholder {
+      color: #166534;
+    }
+
+    .hint {
+      font-size: 10px;
+      color: #166534;
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px solid #14532d;
+      margin: 20px 0;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    button {
+      flex: 1;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 13px;
+      font-weight: bold;
+      letter-spacing: 0.1em;
+      padding: 9px 0;
+      border-radius: 2px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .btn-primary {
+      background: #166534;
+      color: #4ade80;
+      border: 1px solid #16a34a;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: #15803d;
+      color: #86efac;
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .error {
+      font-size: 11px;
+      color: #f87171;
+      margin-top: 10px;
+      min-height: 16px;
+    }
+
+    .saved-banner {
+      display: none;
+      font-size: 11px;
+      color: #86efac;
+      margin-top: 10px;
+      letter-spacing: 0.06em;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="title">VON NEUMANN PROBE</div>
+    <div class="subtitle">PROBE COMMANDER — CREDENTIAL SETUP</div>
+  </div>
+
+  <form id="setup-form" autocomplete="off">
+
+    <div class="field">
+      <label for="vng-key">neumann-probe.net API Key</label>
+      <input
+        id="vng-key"
+        type="password"
+        placeholder="Paste your API key here"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="hint">
+        Found in your account settings at neumann-probe.net
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <div class="field">
+      <label for="claude-bin">Claude Code CLI</label>
+      <input
+        id="claude-bin"
+        type="text"
+        placeholder="Optional — leave blank to autodetect"
+        spellcheck="false"
+        autocomplete="off"
+      />
+      <div class="hint">
+        GUPPI's brain is the Claude Code CLI running on your own Claude
+        subscription — there is no AI API key to enter. Install it and sign in
+        with <code>claude</code> (then <code>/login</code>). Leave this blank
+        unless <code>claude</code> isn't on your PATH; then give its full path.
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="submit" class="btn-primary" id="save-btn">SAVE &amp; LAUNCH</button>
+    </div>
+
+    <div class="error" id="error-msg"></div>
+    <div class="saved-banner" id="saved-banner">&#x25BA; Configuration saved. Launching app…</div>
+
+  </form>
+
+  <script>
+    const vngKeyInput    = document.getElementById('vng-key');
+    const claudeBinInput = document.getElementById('claude-bin');
+    const saveBtn        = document.getElementById('save-btn');
+    const errorMsg       = document.getElementById('error-msg');
+    const savedBanner    = document.getElementById('saved-banner');
+
+    // Pre-fill from existing config. Configs written before this fork replaced
+    // the OpenAI brain may still carry aiBaseUrl/aiApiKey; they're ignored and
+    // drop away on the next save.
+    window.electronAPI.loadConfig().then((cfg) => {
+      if (cfg.vngApiKey) vngKeyInput.value = cfg.vngApiKey;
+      if (cfg.claudeBin) claudeBinInput.value = cfg.claudeBin;
+    });
+
+    document.getElementById('setup-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorMsg.textContent = '';
+
+      const vngApiKey = vngKeyInput.value.trim();
+      const claudeBin = claudeBinInput.value.trim();
+
+      if (!vngApiKey) { errorMsg.textContent = 'neumann-probe.net API key is required.'; return; }
+
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'SAVING…';
+
+      try {
+        await window.electronAPI.saveConfig({ vngApiKey, ...(claudeBin ? { claudeBin } : {}) });
+        savedBanner.style.display = 'block';
+        saveBtn.textContent = 'SAVED';
+      } catch (err) {
+        errorMsg.textContent = 'Failed to save: ' + (err.message ?? err);
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'SAVE & LAUNCH';
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,9 +1,11 @@
 import { logger } from "../../lib/logger.js";
 import * as client from "./client.js";
+import { runTool } from "./run-tool.js";
 import {
   getPendingActions,
   resolvePendingAction,
   type PendingAction,
+  type PendingActionPayload,
 } from "./file-store.js";
 
 const POLL_INTERVAL_MS = 30_000;
@@ -12,7 +14,7 @@ let started = false;
 async function checkCondition(
   action: PendingAction,
   mannies: any[],
-  probe: any
+  probe: any,
 ): Promise<boolean> {
   const cond = action.condition;
   if (cond.type === "manny_idle") {
@@ -31,8 +33,12 @@ async function checkCondition(
       const allPresent = cond.requireItems.every((req) => itemTypes.has(req));
       if (!allPresent) {
         logger.info(
-          { actionId: action.id, requireItems: cond.requireItems, found: [...itemTypes] },
-          "poller: manny idle but required items not yet in inventory — waiting"
+          {
+            actionId: action.id,
+            requireItems: cond.requireItems,
+            found: [...itemTypes],
+          },
+          "poller: manny idle but required items not yet in inventory — waiting",
         );
         return false;
       }
@@ -41,43 +47,113 @@ async function checkCondition(
     return true;
   }
   if (cond.type === "probe_idle") {
-    return probe?.movement?.status !== "moving";
+    // Null-guard: a probe we couldn't load is not "idle". Without this, a null
+    // probe makes `undefined !== "moving"` true and fires the action blind.
+    if (!probe) return false;
+    return probe.movement?.status !== "moving";
   }
   return false;
 }
 
-async function executeAction(action: PendingAction): Promise<void> {
-  const a = action.action;
+/**
+ * Translate a stored action into the (tool, args) pair `runTool` speaks. The
+ * stored payload is camelCase; the tool schemas are snake_case.
+ */
+export function toToolCall(a: PendingActionPayload): {
+  name: string;
+  args: Record<string, unknown>;
+} {
   switch (a.type) {
     case "move_probe":
-      await client.moveProbe(a.x, a.y, a.z);
-      break;
+      return { name: "move_probe", args: { x: a.x, y: a.y, z: a.z } };
     case "craft_item":
-      await client.craftItem(a.mannyId, a.recipe);
-      break;
+      return {
+        name: "craft_item",
+        args: { manny_id: a.mannyId, recipe: a.recipe },
+      };
     case "mine_resources":
-      await client.mineResources(
-        a.mannyId,
-        a.objectId,
-        a.resources,
-        a.targetAmount,
-        a.targetContainerId
-      );
-      break;
+      return {
+        name: "mine_resources",
+        args: {
+          manny_id: a.mannyId,
+          object_id: a.objectId,
+          resources: a.resources,
+          target_amount: a.targetAmount,
+          target_container_id: a.targetContainerId,
+        },
+      };
     case "detach_container":
-      await client.detachContainer(a.mannyId, a.containerId);
-      break;
+      // A stored detach carries no mode, so it is always a plain drift. Sent
+      // explicitly rather than leaning on the handler's default: the schema
+      // marks mode required, and the default is two layers away in client.ts.
+      return {
+        name: "detach_container",
+        args: {
+          manny_id: a.mannyId,
+          container_id: a.containerId,
+          mode: "drifting",
+        },
+      };
     case "recover_container":
-      await client.recoverContainer(a.mannyId, a.objectId);
-      break;
-    default:
-      throw new Error(`Unknown action type`);
+      return {
+        name: "recover_container",
+        args: { manny_id: a.mannyId, object_id: a.objectId },
+      };
+    default: {
+      // Compile-time exhaustiveness: a new PendingActionPayload variant turns this
+      // into a type error rather than a silent runtime throw at poll time.
+      const _exhaustive: never = a;
+      void _exhaustive;
+      throw new Error(
+        `Unknown action type: ${(a as { type?: string }).type ?? "?"}`,
+      );
+    }
+  }
+}
+
+/**
+ * Fire a due action through the same choke point as every other game action, so
+ * it gets `afterTool` bookkeeping — a scheduled detach used to leave no trace in
+ * detached-containers.json, orphaning the container the moment it drifted.
+ *
+ * `confirm: true` is honest rather than a bypass: consent happened at scheduling
+ * time. `runTool` inspects a schedule_action payload and refuses to create the
+ * row at all unless the operator confirmed the action inside it, so a pending
+ * row for an irreversible action can only exist if it was already approved. The
+ * poller is carrying out a decision, not making one.
+ */
+async function executeAction(action: PendingAction): Promise<void> {
+  const { name, args } = toToolCall(action.action);
+  const result = await runTool(name, args, {
+    confirm: true,
+    probeId: action.probeId ?? null,
+  });
+
+  // runTool REFUSES by returning, not by throwing. Our caller reads a clean
+  // return as success and stamps the row "triggered" — so a refusal that slips
+  // through here would be logged as "action triggered successfully" while
+  // nothing happened. `confirm: true` means this is currently unreachable;
+  // it's here so that if that ever stops being true, it fails loudly.
+  if (
+    result &&
+    typeof result === "object" &&
+    (result as { requiresConfirmation?: unknown }).requiresConfirmation === true
+  ) {
+    throw new Error(
+      `runTool refused ${name} despite confirm:true — scheduled action not executed`,
+    );
   }
 }
 
 /** Return the manny ID that an action will occupy, if any. */
 function actionMannyId(action: PendingAction): string | null {
   const a = action.action;
+  // Called before the try/catch below, so a row whose action is missing would
+  // throw out of poll() entirely — and since the row stays pending, every later
+  // tick would die on it too, stopping ALL scheduled work permanently. Tolerate
+  // it here; toToolCall rejects it inside the guarded block, where it becomes a
+  // "failed" row instead of a wedged poller.
+  if (!a || typeof a !== "object") return null;
   if (
     a.type === "craft_item" ||
     a.type === "mine_resources" ||
@@ -89,19 +165,74 @@ function actionMannyId(action: PendingAction): string | null {
   return null;
 }
 
-async function poll(): Promise<void> {
-  const pending = await getPendingActions();
-  if (pending.length === 0) return;
+/**
+ * Is a failed probe fetch worth retrying, or is the probe simply gone?
+ *
+ * A network error (fetch rejects: timeout, ECONNRESET, DNS) is transient — skip
+ * the probe's rows this tick and try again next tick. Only a genuinely permanent
+ * status fails the rows loudly: 404 (probe decommissioned while a row still
+ * targeted it), 410 (gone), and 400 (a malformed request that won't change on
+ * retry). Everything else is transient and retried — critically 401/403 (an
+ * expired/rotated VNG_API_KEY hits EVERY probe; failing the whole queue over a
+ * recoverable auth blip is worse than waiting), plus 408/425/429 and all 5xx.
+ * client.ts formats HTTP errors as "VNG API error (<status>): ...".
+ */
+const PERMANENT_FETCH_STATUS = new Set([400, 404, 410]);
+function isPermanentFetchError(err: unknown): boolean {
+  const status = Number(
+    /VNG API error \((\d+)\)/.exec((err as any)?.message ?? "")?.[1],
+  );
+  return PERMANENT_FETCH_STATUS.has(status);
+}
 
+/**
+ * Run the due actions for one target probe. State is fetched once for this probe
+ * (its own probe + mannies), and manny/probe-move claims are scoped to this call,
+ * so two probes' actions never contend for one claim set.
+ */
+async function pollProbe(
+  probeId: number | null,
+  actions: PendingAction[],
+): Promise<void> {
+  const c = client.clientFor(probeId);
   let probeResp: any = null;
   let manniesResp: any = null;
   try {
     [probeResp, manniesResp] = await Promise.all([
-      client.getProbe(),
-      client.getMannies(),
+      c.getProbe(),
+      c.getMannies(),
     ]);
-  } catch (err) {
-    logger.warn({ err }, "poller: failed to fetch probe state");
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (isPermanentFetchError(err)) {
+      // The probe can't be reached and won't recover (e.g. it was decommissioned
+      // while these rows still targeted it). Fail the rows into the recent view
+      // instead of silently retrying them forever.
+      logger.error(
+        { probeId, err: msg },
+        "poller: target probe fetch failed permanently — failing its scheduled rows",
+      );
+      for (const action of actions) {
+        try {
+          await resolvePendingAction(action.id, {
+            status: "failed",
+            error: `target probe ${probeId ?? "main"} unavailable: ${msg}`,
+          });
+        } catch (e: any) {
+          // Persisting one failure must not abort the loop, or the remaining rows
+          // stay pending and silently retry the dead probe forever next tick.
+          logger.error(
+            { probeId, actionId: action.id, err: e?.message ?? String(e) },
+            "poller: could not persist permanent-failure status",
+          );
+        }
+      }
+    } else {
+      logger.warn(
+        { probeId, err: msg },
+        "poller: transient probe fetch failure — retrying next tick",
+      );
+    }
     return;
   }
 
@@ -113,20 +244,20 @@ async function poll(): Promise<void> {
   const claimedMannies = new Set<string>();
   let probeMoveClaimed = false;
 
-  for (const action of pending) {
+  for (const action of actions) {
     // Check if the resource this action needs is already claimed this cycle
     const mannyId = actionMannyId(action);
     if (mannyId && claimedMannies.has(mannyId)) {
       logger.info(
         { actionId: action.id, mannyId },
-        "poller: manny already claimed this cycle — deferring to next tick"
+        "poller: manny already claimed this cycle — deferring to next tick",
       );
       continue;
     }
     if (action.action.type === "move_probe" && probeMoveClaimed) {
       logger.info(
         { actionId: action.id },
-        "poller: probe move already claimed this cycle — deferring"
+        "poller: probe move already claimed this cycle — deferring",
       );
       continue;
     }
@@ -135,7 +266,10 @@ async function poll(): Promise<void> {
     try {
       conditionMet = await checkCondition(action, mannies, probe);
     } catch (err) {
-      logger.warn({ err, actionId: action.id }, "poller: condition check error");
+      logger.warn(
+        { err, actionId: action.id },
+        "poller: condition check error",
+      );
       continue;
     }
 
@@ -143,21 +277,63 @@ async function poll(): Promise<void> {
 
     logger.info(
       { actionId: action.id, description: action.description },
-      "poller: condition met — executing action"
+      "poller: condition met — executing action",
     );
 
     try {
       await executeAction(action);
       await resolvePendingAction(action.id, { status: "triggered" });
-      logger.info({ actionId: action.id }, "poller: action triggered successfully");
+      logger.info(
+        { actionId: action.id },
+        "poller: action triggered successfully",
+      );
 
       // Mark the resource as claimed so subsequent actions skip this cycle
       if (mannyId) claimedMannies.add(mannyId);
       if (action.action.type === "move_probe") probeMoveClaimed = true;
     } catch (err: any) {
       const msg = err?.message ?? String(err);
-      logger.error({ actionId: action.id, err: msg }, "poller: action execution failed");
-      await resolvePendingAction(action.id, { status: "failed", error: msg });
+      logger.error(
+        { actionId: action.id, err: msg },
+        "poller: action execution failed",
+      );
+      try {
+        await resolvePendingAction(action.id, { status: "failed", error: msg });
+      } catch (e: any) {
+        logger.error(
+          { actionId: action.id, err: e?.message ?? String(e) },
+          "poller: could not persist action-failure status",
+        );
+      }
+    }
+  }
+}
+
+async function poll(): Promise<void> {
+  const pending = await getPendingActions();
+  if (pending.length === 0) return;
+
+  // Group by target probe (null = main). A missing probeId means the row predates
+  // multi-probe, so it can only have meant the main probe — coalesce, don't fail.
+  const byProbe = new Map<number | null, PendingAction[]>();
+  for (const action of pending) {
+    const pid = action.probeId ?? null;
+    let bucket = byProbe.get(pid);
+    if (!bucket) byProbe.set(pid, (bucket = []));
+    bucket.push(action);
+  }
+
+  // Each probe fetches and fires independently; allSettled so one probe's
+  // failure never aborts the others' due work (Promise.all would reject-fast).
+  // But allSettled always fulfills, so we MUST inspect the settlements — an
+  // unhandled rejection out of pollProbe would otherwise vanish with no trace,
+  // exactly the silent failure this poller exists to avoid.
+  const results = await Promise.allSettled(
+    [...byProbe].map(([pid, actions]) => pollProbe(pid, actions)),
+  );
+  for (const r of results) {
+    if (r.status === "rejected") {
+      logger.error({ err: r.reason }, "poller: pollProbe rejected");
     }
   }
 }
@@ -166,7 +342,20 @@ export function startPoller(): void {
   if (started) return;
   started = true;
   logger.info({ intervalMs: POLL_INTERVAL_MS }, "poller: started");
+  // Reentrancy guard: a tick that runs long (executeAction is a real game call)
+  // must not overlap the next one, or both could read the same pending row and
+  // fire it twice. A skipped tick just retries in POLL_INTERVAL_MS.
+  let ticking = false;
   setInterval(() => {
-    poll().catch((err) => logger.error({ err }, "poller: unexpected error"));
+    if (ticking) {
+      logger.info("poller: previous tick still running — skipping this one");
+      return;
+    }
+    ticking = true;
+    poll()
+      .catch((err) => logger.error({ err }, "poller: unexpected error"))
+      .finally(() => {
+        ticking = false;
+      });
   }, POLL_INTERVAL_MS);
 }

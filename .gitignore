@@ -47,3 +47,13 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Local secrets — never commit (holds the live game API key)
+.env
+.env.*
+
+# Live game bookkeeping — one player's probe state, not source.
+# Upstream tracks these, which merged its author's explored-sector counts into
+# ours (HomeSetup.md Step 5 concedes the repo ships their data). Untracked here
+# so pulls stop blending two players' games; the api-server recreates them.
+artifacts/api-server/data/

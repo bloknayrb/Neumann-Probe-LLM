@@ -10,24 +10,12 @@ globalThis.require = createRequire(import.meta.url);
 
 const artifactDir = path.dirname(fileURLToPath(import.meta.url));
 
-async function buildAll() {
-  const distDir = path.resolve(artifactDir, "dist");
-  await rm(distDir, { recursive: true, force: true });
-
-  await esbuild({
-    entryPoints: [path.resolve(artifactDir, "src/index.ts")],
-    platform: "node",
-    bundle: true,
-    format: "esm",
-    outdir: distDir,
-    outExtension: { ".js": ".mjs" },
-    logLevel: "info",
-    // Some packages may not be bundleable, so we externalize them, we can add more here as needed.
-    // Some of the packages below may not be imported or installed, but we're adding them in case they are in the future.
-    // Examples of unbundleable packages:
-    // - uses native modules and loads them dynamically (e.g. sharp)
-    // - use path traversal to read files (e.g. @google-cloud/secret-manager loads sibling .proto files)
-    external: [
+// Some packages may not be bundleable, so we externalize them, we can add more here as needed.
+// Some of the packages below may not be imported or installed, but we're adding them in case they are in the future.
+// Examples of unbundleable packages:
+// - uses native modules and loads them dynamically (e.g. sharp)
+// - use path traversal to read files (e.g. @google-cloud/secret-manager loads sibling .proto files)
+const external = [
       "*.node",
       "sharp",
       "better-sqlite3",
@@ -100,15 +88,11 @@ async function buildAll() {
       "puppeteer",
       "puppeteer-core",
       "electron",
-    ],
-    sourcemap: "linked",
-    plugins: [
-      // pino relies on workers to handle logging, instead of externalizing it we use a plugin to handle it
-      esbuildPluginPino({ transports: ["pino-pretty"] })
-    ],
-    // Make sure packages that are cjs only (e.g. express) but are bundled continue to work in our esm output file
-    banner: {
-      js: `import { createRequire as __bannerCrReq } from 'node:module';
+];
+
+// Make sure packages that are cjs only (e.g. express) but are bundled continue to work in our esm output file
+const banner = {
+  js: `import { createRequire as __bannerCrReq } from 'node:module';
 import __bannerPath from 'node:path';
 import __bannerUrl from 'node:url';
 
@@ -116,7 +100,43 @@ globalThis.require = __bannerCrReq(import.meta.url);
 globalThis.__filename = __bannerUrl.fileURLToPath(import.meta.url);
 globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
     `,
-    },
+};
+
+async function buildAll() {
+  const distDir = path.resolve(artifactDir, "dist");
+  await rm(distDir, { recursive: true, force: true });
+
+  // Main API server (uses pino -> needs the pino worker plugin).
+  await esbuild({
+    entryPoints: [path.resolve(artifactDir, "src/index.ts")],
+    platform: "node",
+    bundle: true,
+    format: "esm",
+    outdir: distDir,
+    outExtension: { ".js": ".mjs" },
+    logLevel: "info",
+    external,
+    sourcemap: "linked",
+    plugins: [
+      // pino relies on workers to handle logging, instead of externalizing it we use a plugin to handle it
+      esbuildPluginPino({ transports: ["pino-pretty"] }),
+    ],
+    banner,
+  });
+
+  // stdio MCP server for the headless Claude brain -> dist/neumann-mcp.mjs
+  // Flat outfile (own esbuild call) so the path is dist/neumann-mcp.mjs, not
+  // dist/mcp/neumann-mcp.mjs. No pino here, so no pino plugin needed.
+  await esbuild({
+    entryPoints: [path.resolve(artifactDir, "src/mcp/neumann-mcp.ts")],
+    platform: "node",
+    bundle: true,
+    format: "esm",
+    outfile: path.resolve(distDir, "neumann-mcp.mjs"),
+    logLevel: "info",
+    external,
+    sourcemap: "linked",
+    banner,
   });
 }
 

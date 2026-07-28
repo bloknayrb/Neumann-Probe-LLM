@@ -9,180 +9,260 @@ function headers() {
   };
 }
 
-async function vngFetch(path: string, init: RequestInit = {}) {
+async function vngFetch(path: string, init: RequestInit = {}): Promise<any> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { ...headers(), ...((init.headers as Record<string, string>) ?? {}) },
+    headers: {
+      ...headers(),
+      ...((init.headers as Record<string, string>) ?? {}),
+    },
   });
   const body = await res.json();
   if (!res.ok) {
     const msg =
-      (body as any)?.error?.message ??
-      (body as any)?.message ??
-      res.statusText;
+      (body as any)?.error?.message ?? (body as any)?.message ?? res.statusText;
     throw new Error(`VNG API error (${res.status}): ${msg}`);
   }
   return body;
 }
 
-/** Returns probe object including probe.inventory */
-export async function getProbe() {
-  return vngFetch("/api/probe");
+const vngPost = (path: string, body: Record<string, unknown> = {}) =>
+  vngFetch(path, { method: "POST", body: JSON.stringify(body) });
+
+const vngPatch = (path: string, body: Record<string, unknown>) =>
+  vngFetch(path, { method: "PATCH", body: JSON.stringify(body) });
+
+/**
+ * Normalize an operator-supplied probe ID. `null` means the main probe.
+ *
+ * Throws rather than coercing: `Number("abc")` is NaN, which is falsy enough to
+ * silently fall back to the main probe on one code path while reading as a real
+ * ID on another — so junk input could target one probe and be recorded against
+ * another. Every entry point that accepts a probeId must go through this, or
+ * that split reappears.
+ */
+export function parseProbeId(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0)
+    throw new Error(`invalid probeId: ${raw}`);
+  return n;
 }
 
-export async function getMannies() {
-  return vngFetch("/api/probe/mannies");
+// ── Probe-scoped client factory ───────────────────────────────────────────────
+// Returns a full set of client functions scoped to a specific probe (by numeric
+// ID) or to the operator's main probe (when probeId is null / undefined).
+export function clientFor(probeId?: number | null) {
+  const base = probeId != null ? `/api/probe/${probeId}` : `/api/probe`;
+  const mPost = (
+    mannyId: string,
+    suffix: string,
+    body: Record<string, unknown> = {},
+  ) =>
+    vngPost(`${base}/mannies/${encodeURIComponent(mannyId)}/${suffix}`, body);
+
+  return {
+    getProbe: () => vngFetch(base),
+    getMannies: () => vngFetch(`${base}/mannies`),
+    getSector: () => vngFetch(`${base}/sector`),
+    getProbeImprovements: () =>
+      vngFetch(`${base}/probe-improvements-available`),
+
+    moveProbe: (x: number, y: number, z: number) =>
+      vngPost(`${base}/move`, { target: { x, y, z } }),
+    deployManny: (itemId: string) => vngPost(`${base}/mannies`, { itemId }),
+    atomicPrinterCraft: (recipe: string) =>
+      vngPost(`${base}/atomic-printer/craft`, { recipe }),
+    jettisonItem: (inventoryId: string, amount?: number) =>
+      vngPost(
+        `${base}/inventory/${encodeURIComponent(inventoryId)}/jettison`,
+        amount !== undefined ? { amount } : {},
+      ),
+    sendMessage: (
+      recipientType: "probe" | "planet",
+      recipientId: number | string,
+      msgBody: string,
+    ) =>
+      vngPost(`${base}/messages`, {
+        recipient: { type: recipientType, id: recipientId },
+        body: msgBody,
+      }),
+
+    craftItem: (mannyId: string, recipe: string) =>
+      mPost(mannyId, "craft", { recipe }),
+    mineResources: (
+      mannyId: string,
+      objectId: string,
+      resources: string[],
+      targetAmount: number,
+      targetContainerId?: string,
+    ) =>
+      mPost(mannyId, "mine", {
+        objectId,
+        resources,
+        targetAmount,
+        ...(targetContainerId ? { targetContainerId } : {}),
+      }),
+    repairManny: (mannyId: string, integrityPercent: number) =>
+      mPost(mannyId, "repair", { integrityPercent }),
+    recallManny: (mannyId: string) => mPost(mannyId, "recall"),
+    renameManny: (mannyId: string, name: string) =>
+      vngPatch(`${base}/mannies/${encodeURIComponent(mannyId)}`, { name }),
+    salvageObject: (mannyId: string, objectId: string) =>
+      mPost(mannyId, "salvage", { objectId }),
+    inspectSectorObject: (mannyId: string, objectId: string) =>
+      mPost(mannyId, "inspect-sector-object", { objectId }),
+    recoverContainer: (mannyId: string, objectId: string) =>
+      mPost(mannyId, "recover-storage-container", { objectId }),
+    dropContainerOnAsteroid: (
+      mannyId: string,
+      containerId: string,
+      objectId: string,
+    ) => mPost(mannyId, "drop-storage-container", { containerId, objectId }),
+    detachContainer: (
+      mannyId: string,
+      containerId: string,
+      mode: "drifting" | "hidden_on_asteroid" = "drifting",
+      asteroidObjectId?: string,
+    ) =>
+      mPost(mannyId, "detach-storage-container", {
+        containerId,
+        mode,
+        ...(mode === "hidden_on_asteroid" && asteroidObjectId
+          ? { objectId: asteroidObjectId }
+          : {}),
+      }),
+    refillDeuteriumTank: (mannyId: string) =>
+      mPost(mannyId, "refill-deuterium-tank"),
+    transferDeuteriumToProbe: (
+      mannyId: string,
+      targetProbeId: number,
+      amount: number,
+    ) =>
+      mPost(mannyId, "transfer-deuterium-to-probe", { targetProbeId, amount }),
+    assembleProbe: (mannyId: string, containerIds: string[]) =>
+      mPost(mannyId, "assemble-probe", { containerIds }),
+    improveProbe: (mannyId: string, improvement: string) =>
+      mPost(mannyId, "improve-probe", { improvement }),
+    installWaypointBookmark: (
+      mannyId: string,
+      objectId: string,
+      name: string,
+    ) => mPost(mannyId, "install-bookmark", { objectId, name }),
+    dropContainerOnPlanet: (
+      mannyId: string,
+      containerId: string,
+      planetId: string,
+    ) => mPost(mannyId, "drop-storage-container", { containerId, planetId }),
+    turnOnRelay: (mannyId: string, relayId: number, networkName?: string) =>
+      mPost(mannyId, "turn-on-relay", {
+        relayId,
+        ...(networkName ? { networkName } : {}),
+      }),
+    dropMannyCargo: (mannyId: string) => mPost(mannyId, "drop-manny-cargo"),
+  };
 }
 
-export async function getSector() {
-  return vngFetch("/api/probe/sector");
-}
+// ── Convenience aliases (main probe) ─────────────────────────────────────────
+const main = () => clientFor(null);
 
-export async function getCraftingRecipes() {
-  return vngFetch("/api/crafting-recipes");
-}
+export const getProbe = () => main().getProbe();
+export const getMannies = () => main().getMannies();
+export const getSector = () => main().getSector();
 
-export async function scanSector(x: number, y: number, z: number) {
-  return vngFetch(`/api/sector?x=${x}&y=${y}&z=${z}`);
-}
+// Parameterized probe endpoints — used for owned probes / drones
+export const getProbeById = (id: number) => clientFor(id).getProbe();
+export const getManniesById = (id: number) => clientFor(id).getMannies();
+export const getSectorById = (id: number) => clientFor(id).getSector();
 
-export async function moveProbe(x: number, y: number, z: number) {
-  return vngFetch("/api/probe/move", {
-    method: "POST",
-    body: JSON.stringify({ target: { x, y, z } }),
-  });
-}
+// Global (not probe-scoped) endpoints
+export const getCraftingRecipes = () => vngFetch("/api/crafting-recipes");
+export const getVisitedSectors = () => vngFetch("/api/probe/visited-sectors");
+export const getProbeList = () => vngFetch("/api/probes");
+export const getProbeImprovements = () => main().getProbeImprovements();
+export const getMissions = () => vngFetch("/api/probe/missions");
+export const scanSector = (x: number, y: number, z: number) =>
+  vngFetch(`/api/sector?x=${x}&y=${y}&z=${z}`);
 
-export async function craftItem(mannyId: string, recipe: string) {
-  return vngFetch(`/api/probe/mannies/${encodeURIComponent(mannyId)}/craft`, {
-    method: "POST",
-    body: JSON.stringify({ recipe }),
-  });
-}
+// ── Main-probe action aliases (used by poller.ts and legacy callers) ──────────
+export const moveProbe = (x: number, y: number, z: number) =>
+  main().moveProbe(x, y, z);
+export const deployManny = (itemId: string) => main().deployManny(itemId);
+export const atomicPrinterCraft = (recipe: string) =>
+  main().atomicPrinterCraft(recipe);
+export const jettisonItem = (inventoryId: string, amount?: number) =>
+  main().jettisonItem(inventoryId, amount);
+export const sendMessage = (
+  recipientType: "probe" | "planet",
+  recipientId: number | string,
+  body: string,
+) => main().sendMessage(recipientType, recipientId, body);
 
-export async function mineResources(
+export const craftItem = (mannyId: string, recipe: string) =>
+  main().craftItem(mannyId, recipe);
+export const mineResources = (
   mannyId: string,
   objectId: string,
   resources: string[],
   targetAmount: number,
-  targetContainerId?: string
-) {
-  const body: Record<string, unknown> = { objectId, resources, targetAmount };
-  if (targetContainerId) body.targetContainerId = targetContainerId;
-  return vngFetch(`/api/probe/mannies/${encodeURIComponent(mannyId)}/mine`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-export async function repairManny(mannyId: string, integrityPercent: number) {
-  return vngFetch(
-    `/api/probe/mannies/${encodeURIComponent(mannyId)}/repair`,
-    {
-      method: "POST",
-      body: JSON.stringify({ integrityPercent }),
-    }
+  targetContainerId?: string,
+) =>
+  main().mineResources(
+    mannyId,
+    objectId,
+    resources,
+    targetAmount,
+    targetContainerId,
   );
-}
-
-export async function recallManny(mannyId: string) {
-  return vngFetch(
-    `/api/probe/mannies/${encodeURIComponent(mannyId)}/recall`,
-    {
-      method: "POST",
-      body: JSON.stringify({}),
-    }
-  );
-}
-
-export async function renameManny(mannyId: string, name: string) {
-  return vngFetch(`/api/probe/mannies/${encodeURIComponent(mannyId)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ name }),
-  });
-}
-
-/** Deploy a manny from probe inventory into active service. itemId is the inventory item ID of the manny. */
-export async function deployManny(itemId: string) {
-  return vngFetch("/api/probe/mannies", {
-    method: "POST",
-    body: JSON.stringify({ itemId }),
-  });
-}
-
-export async function detachContainer(mannyId: string, containerId: string) {
-  return vngFetch(
-    `/api/probe/mannies/${encodeURIComponent(mannyId)}/detach-storage-container`,
-    {
-      method: "POST",
-      body: JSON.stringify({ containerId }),
-    }
-  );
-}
-
-export async function salvageObject(mannyId: string, objectId: string) {
-  return vngFetch(
-    `/api/probe/mannies/${encodeURIComponent(mannyId)}/salvage`,
-    {
-      method: "POST",
-      body: JSON.stringify({ objectId }),
-    }
-  );
-}
-
-export async function inspectAsteroid(mannyId: string, objectId: string) {
-  return vngFetch(
-    `/api/probe/mannies/${encodeURIComponent(mannyId)}/inspect-asteroid`,
-    {
-      method: "POST",
-      body: JSON.stringify({ objectId }),
-    }
-  );
-}
-
-export async function jettisonItem(inventoryId: string, amount?: number) {
-  const body: Record<string, unknown> = {};
-  if (amount !== undefined) body.amount = amount;
-  return vngFetch(
-    `/api/probe/inventory/${encodeURIComponent(inventoryId)}/jettison`,
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    }
-  );
-}
-
-export async function recoverContainer(mannyId: string, objectId: string) {
-  return vngFetch(
-    `/api/probe/mannies/${encodeURIComponent(mannyId)}/recover-storage-container`,
-    {
-      method: "POST",
-      body: JSON.stringify({ objectId }),
-    }
-  );
-}
-
-export async function atomicPrinterCraft(recipe: string) {
-  return vngFetch("/api/probe/atomic-printer/craft", {
-    method: "POST",
-    body: JSON.stringify({ recipe }),
-  });
-}
-
-export async function getVisitedSectors() {
-  return vngFetch("/api/probe/visited-sectors");
-}
-
-export async function dropContainerOnAsteroid(
+export const repairManny = (mannyId: string, integrityPercent: number) =>
+  main().repairManny(mannyId, integrityPercent);
+export const recallManny = (mannyId: string) => main().recallManny(mannyId);
+export const renameManny = (mannyId: string, name: string) =>
+  main().renameManny(mannyId, name);
+export const salvageObject = (mannyId: string, objectId: string) =>
+  main().salvageObject(mannyId, objectId);
+export const inspectSectorObject = (mannyId: string, objectId: string) =>
+  main().inspectSectorObject(mannyId, objectId);
+/** @deprecated Use inspectSectorObject instead */
+export const inspectAsteroid = inspectSectorObject;
+export const recoverContainer = (mannyId: string, objectId: string) =>
+  main().recoverContainer(mannyId, objectId);
+export const dropContainerOnAsteroid = (
   mannyId: string,
   containerId: string,
-  objectId: string
-) {
-  return vngFetch(
-    `/api/probe/mannies/${encodeURIComponent(mannyId)}/drop-storage-container`,
-    {
-      method: "POST",
-      body: JSON.stringify({ containerId, objectId }),
-    }
-  );
-}
+  objectId: string,
+) => main().dropContainerOnAsteroid(mannyId, containerId, objectId);
+export const dropContainerOnPlanet = (
+  mannyId: string,
+  containerId: string,
+  planetId: string,
+) => main().dropContainerOnPlanet(mannyId, containerId, planetId);
+export const detachContainer = (
+  mannyId: string,
+  containerId: string,
+  mode: "drifting" | "hidden_on_asteroid" = "drifting",
+  asteroidObjectId?: string,
+) => main().detachContainer(mannyId, containerId, mode, asteroidObjectId);
+export const refillDeuteriumTank = (mannyId: string) =>
+  main().refillDeuteriumTank(mannyId);
+export const transferDeuteriumToProbe = (
+  mannyId: string,
+  targetProbeId: number,
+  amount: number,
+) => main().transferDeuteriumToProbe(mannyId, targetProbeId, amount);
+export const assembleProbe = (mannyId: string, containerIds: string[]) =>
+  main().assembleProbe(mannyId, containerIds);
+export const improveProbe = (mannyId: string, improvement: string) =>
+  main().improveProbe(mannyId, improvement);
+export const installWaypointBookmark = (
+  mannyId: string,
+  objectId: string,
+  name: string,
+) => main().installWaypointBookmark(mannyId, objectId, name);
+export const turnOnRelay = (
+  mannyId: string,
+  relayId: number,
+  networkName?: string,
+) => main().turnOnRelay(mannyId, relayId, networkName);
+export const dropMannyCargo = (mannyId: string) =>
+  main().dropMannyCargo(mannyId);
