@@ -6,10 +6,10 @@ This is the **harness** subsystem of the parent Neumann-probe workspace (see `..
 
 ## Origin & the #1 thing not to undo
 
-Cloned from `SeanPGorman/Neumann-Probe-LLM` (a Replit project — hence `.replit`, a Linux-generated `pnpm-lock.yaml`, and required `PORT`/`BASE_PATH` env vars) and then **deliberately modified so the game "brain" is the local Claude Code CLI on Bryan's subscription, replacing the original OpenAI (`gpt-5.4`) tool-calling loop.**
+Cloned from `SeanPGorman/Neumann-Probe-LLM` (a Replit project — hence `.replit`, a Linux-generated `pnpm-lock.yaml`, and required `PORT`/`BASE_PATH` env vars) and then **deliberately modified so the game "brain" defaults to the local Claude Code CLI on Bryan's subscription, replacing the original OpenAI (`gpt-5.4`) tool-calling loop.**
 
-- **Do NOT reintroduce OpenAI** into `POST /api/vng/command`. The OpenAI loop was intentionally removed; the route now spawns headless `claude`. OpenAI env vars are dead.
-- The spawn **deletes `ANTHROPIC_API_KEY` from the child env** to force subscription (OAuth) auth. Never add `--bare` (it disables OAuth). Preserve both.
+- **Claude is the default brain; the OpenAI loop is back as an opt-in _second_ brain** behind a `VNG_BRAIN` switch. `POST /api/vng/command` dispatches on `VNG_BRAIN` (default `claude`) or a per-request `provider` field. This reverses the former "do not reintroduce OpenAI" rule — a considered decision. The OpenAI brain is fenced **identically** to Claude (SAFE tools only, every call through `runTool`), so it can't reach irreversible tools either; it bills **per-token against `OPENAI_API_KEY`**, unlike the subscription-based Claude brain.
+- The **Claude** spawn **deletes `ANTHROPIC_API_KEY` from the child env** to force subscription (OAuth) auth. Never add `--bare` (it disables OAuth). Preserve both. (The OpenAI brain spawns nothing, so this concerns only the Claude path.)
 
 Full endpoint/env/tool reference: **`HARNESS-CLAUDE.md`** (read it before changing the brain, the tools, or gating).
 

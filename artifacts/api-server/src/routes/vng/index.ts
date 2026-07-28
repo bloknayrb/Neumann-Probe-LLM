@@ -1,4 +1,5 @@
 import { Router } from "express";
+import OpenAI from "openai";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fsp, constants as fsc } from "node:fs";
@@ -10,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import * as client from "./client.js";
 import { runTool } from "./run-tool.js";
 import { SAFE } from "./tool-policy.js";
+import { TOOLS } from "./tools.js";
 import { mapSectorObjects } from "./sector-map.js";
 import {
   cancelPendingAction,
@@ -257,8 +259,21 @@ router.post("/tool", async (req, res) => {
 
 const CLAUDE_MODEL = process.env.CLAUDE_BRAIN_MODEL || "sonnet";
 
-function buildPrompt(command: string, probeId: number | null): string {
-  const rules = `You are GUPPI, the onboard AI assistant of a Von Neumann Probe. You carry out the operator's orders by calling the provided game tools (exposed via the "neumann" MCP server).
+// OpenAI ("second brain") config. Model + endpoint come from the env; the
+// upstream default targeted an OpenAI-compatible gateway alias, so both stay
+// overridable. A missing key only surfaces when the OpenAI brain is invoked.
+const OPENAI_MODEL = process.env.OPENAI_BRAIN_MODEL || "gpt-5.4";
+const openai = new OpenAI({
+  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
+});
+
+function buildPrompt(
+  command: string,
+  probeId: number | null,
+  toolIntro = 'the provided game tools (exposed via the "neumann" MCP server)',
+): string {
+  const rules = `You are GUPPI, the onboard AI assistant of a Von Neumann Probe. You carry out the operator's orders by calling ${toolIntro}.
 
 OPERATING RULES:
 - ALWAYS call get_game_state FIRST to load the current probe status, mannies (with their exact string IDs), sector objects, inventory, and crafting recipes. Never invent IDs — only use IDs returned by the tools.
@@ -294,10 +309,12 @@ router.post("/command", async (req, res) => {
     command,
     sessionId: bodySessionId,
     probeId: rawProbeId,
+    provider: bodyProvider,
   } = req.body as {
     command: string;
     sessionId?: string;
     probeId?: number | null;
+    provider?: string;
   };
 
   if (!command?.trim()) {
@@ -319,7 +336,31 @@ router.post("/command", async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
+  // Which brain executes the order. Default "claude" (subscription CLI); set
+  // VNG_BRAIN=openai (or send { provider: "openai" }) for the OpenAI loop. A
+  // per-request provider wins over the env default.
+  const provider = String(
+    bodyProvider || process.env.VNG_BRAIN || "claude",
+  ).toLowerCase();
+
+  if (provider === "openai") {
+    await runOpenAiBrain(res, { command, probeId });
+    return;
+  }
+
   const sessionId = bodySessionId?.trim() || randomUUID();
+  await runClaudeBrain(req, res, { command, sessionId, probeId });
+});
+
+async function runClaudeBrain(
+  req: import("express").Request,
+  res: import("express").Response,
+  {
+    command,
+    sessionId,
+    probeId,
+  }: { command: string; sessionId: string; probeId: number | null },
+): Promise<void> {
   let mcpConfigPath: string | null = null;
   // Map tool_use id -> display tool name so we can label tool_result events.
   const toolNamesById = new Map<string, string>();
@@ -522,6 +563,113 @@ router.post("/command", async (req, res) => {
     sse(res, { type: "error", message: err.message });
     finish();
   }
-});
+}
+
+/**
+ * OpenAI "second brain": a plain chat-completions tool-calling loop, fenced the
+ * SAME way as the Claude brain. It is only ever handed the SAFE tools, and every
+ * call still goes through runTool (which gates anything non-SAFE and does the
+ * data/*.json bookkeeping via afterTool). It never passes confirm, and probeId
+ * is server-derived (never from model args), so an irreversible tool — absent
+ * from its toolset anyway — can never execute here.
+ */
+async function runOpenAiBrain(
+  res: import("express").Response,
+  { command, probeId }: { command: string; probeId: number | null },
+): Promise<void> {
+  const safeTools = TOOLS.filter((t) => SAFE.has(t.function.name));
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    {
+      role: "system",
+      content: buildPrompt(command, probeId, "the provided game tools"),
+    },
+    { role: "user", content: command },
+  ];
+
+  sse(res, { type: "status", message: "OpenAI brain thinking…" });
+
+  const MAX_ITERATIONS = 10;
+  try {
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
+      const completion = await openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        max_completion_tokens: 8192,
+        messages,
+        tools: safeTools,
+        tool_choice: "auto",
+      });
+
+      const msg = completion.choices[0].message;
+      messages.push(msg);
+
+      if (msg.content) sse(res, { type: "message", content: msg.content });
+      if (!msg.tool_calls || msg.tool_calls.length === 0) break;
+
+      for (const call of msg.tool_calls) {
+        const toolName = call.function.name;
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments);
+        } catch {
+          args = {};
+        }
+
+        sse(res, { type: "action", tool: toolName, params: args, id: call.id });
+
+        let result: unknown;
+        try {
+          result = await runTool(toolName, args, { probeId });
+          if (
+            result &&
+            typeof result === "object" &&
+            (result as any).requiresConfirmation === true
+          ) {
+            // Defense in depth: SAFE tools never trip this, but if the model
+            // somehow named a gated tool, refuse rather than confirm.
+            result = {
+              error: `Refused: "${toolName}" requires operator confirmation and cannot be run autonomously.`,
+            };
+            sse(res, {
+              type: "result",
+              tool: toolName,
+              id: call.id,
+              success: false,
+              error: (result as any).error,
+            });
+          } else {
+            sse(res, {
+              type: "result",
+              tool: toolName,
+              id: call.id,
+              success: true,
+              data: result,
+            });
+          }
+        } catch (err: any) {
+          result = { error: err.message };
+          sse(res, {
+            type: "result",
+            tool: toolName,
+            id: call.id,
+            success: false,
+            error: err.message,
+          });
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify(result),
+        });
+      }
+    }
+    sse(res, { type: "done" });
+  } catch (err: any) {
+    sse(res, { type: "error", message: err.message });
+    sse(res, { type: "done" });
+  } finally {
+    res.end();
+  }
+}
 
 export default router;
